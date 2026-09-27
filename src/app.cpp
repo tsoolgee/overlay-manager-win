@@ -4,9 +4,11 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <thread>
 
 #include "json.h"
 #include "resource.h"
+#include "updater.h"
 #include "util.h"
 
 namespace {
@@ -16,7 +18,14 @@ const wchar_t* kMutexName = L"OverlayManager_SingleInstanceMutex";
 const wchar_t* kAppName = L"Overlay Manager";
 
 const UINT WM_TRAY = WM_APP + 1;
+const UINT WM_UPDATE_DONE = WM_APP + 2;   // lParam: UpdateResult*, owned by the receiver
 const int kHotkeyId = 1;
+
+// Update checks: shortly after start (not during it, so a slow network never
+// delays the overlays), then every few hours for a machine that stays on.
+const UINT_PTR kUpdateTimer = 1;
+const UINT kFirstCheckMs = 20 * 1000;
+const UINT kCheckEveryMs = 6 * 60 * 60 * 1000;
 
 // Tray menu command ids.
 enum {
@@ -51,6 +60,8 @@ js::Value LayerToJson(const Layer& l) {
     o["rotation"] = l.rotation;
     o["clickThrough"] = l.clickThrough;
     o["grayscale"] = l.grayscale;
+    o["removeBg"] = l.removeBg;
+    o["bgTolerance"] = l.bgTolerance;
 
     // Native pixel size, so the aspect lock in the UI uses the real ratio
     // rather than whatever the box happens to be set to right now.
@@ -92,6 +103,8 @@ void ApplyLayerJson(const js::Value& v, Layer& l) {
     if (v.has("rotation")) l.rotation = std::clamp(v["rotation"].asNumber(l.rotation), -180.0, 180.0);
     if (v.has("clickThrough")) l.clickThrough = v["clickThrough"].asBool(l.clickThrough);
     if (v.has("grayscale")) l.grayscale = v["grayscale"].asBool(l.grayscale);
+    if (v.has("removeBg")) l.removeBg = v["removeBg"].asBool(l.removeBg);
+    if (v.has("bgTolerance")) l.bgTolerance = std::clamp(v["bgTolerance"].asInt(l.bgTolerance), 1, 100);
 }
 
 std::string HotkeyLabel(const Settings& s) {
@@ -105,6 +118,14 @@ std::string HotkeyLabel(const Settings& s) {
 }
 
 }  // namespace
+
+// Handed from the worker thread back to the UI thread.
+struct UpdateResult {
+    bool manual = false;
+    UpdateInfo info;
+    std::string installError;
+    bool installed = false;
+};
 
 App::App(HINSTANCE inst) : inst_(inst) {}
 
@@ -123,11 +144,18 @@ App::~App() {
     }
 }
 
-bool App::Start(bool startMinimized) {
+bool App::Start(bool startMinimized, bool afterUpdate) {
     // Single instance: a second launch pops the running one's window rather
     // than adding a duplicate set of overlays.
     mutex_ = CreateMutexW(nullptr, TRUE, kMutexName);
-    if (mutex_ && GetLastError() == ERROR_ALREADY_EXISTS) {
+    bool taken = mutex_ && GetLastError() == ERROR_ALREADY_EXISTS;
+    if (taken && afterUpdate) {
+        // Launched by the updater while the old version is still shutting
+        // down: wait for it to let go instead of handing over to it.
+        const DWORD w = WaitForSingleObject(mutex_, 20000);
+        taken = !(w == WAIT_OBJECT_0 || w == WAIT_ABANDONED);
+    }
+    if (taken) {
         if (HWND existing = FindWindowW(kHiddenClass, nullptr))
             PostMessageW(existing, WM_COMMAND, CMD_OPEN, 0);
         else
@@ -184,6 +212,10 @@ bool App::Start(bool startMinimized) {
 
     if (!manager_->Create(settings_.lightTheme)) return false;
     if (!startMinimized) manager_->Show();
+
+    justUpdated_ = afterUpdate;
+    CleanupAfterUpdate();
+    SetTimer(hidden_, kUpdateTimer, kFirstCheckMs, nullptr);
     return true;
 }
 
@@ -279,6 +311,7 @@ void App::SendInit() {
     s["minimizeToTray"] = settings_.minimizeToTray;
     s["showTrayIcon"] = settings_.showTrayIcon;
     s["lightTheme"] = settings_.lightTheme;
+    s["autoUpdate"] = settings_.autoUpdate;
     s["hotkey"] = HotkeyLabel(settings_);
     m["settings"] = js::Value(std::move(s));
 
@@ -296,7 +329,24 @@ void App::SendInit() {
     for (const auto& l : layers_) arr.push_back(LayerToJson(l));
     m["layers"] = js::Value(std::move(arr));
     m["selected"] = selected_;
+    m["version"] = AppVersion();
 
+    Send(js::Value(std::move(m)).dump());
+    SendUpdateState();
+    if (justUpdated_) {
+        justUpdated_ = false;
+        js::Object t;
+        t["t"] = "toast";
+        t["text"] = std::string("התוכנה עודכנה לגרסה ") + AppVersion();
+        Send(js::Value(std::move(t)).dump());
+    }
+}
+
+void App::SendUpdateState() {
+    js::Object m;
+    m["t"] = "update";
+    m["busy"] = updateBusy_;
+    m["ready"] = updateReady_;
     Send(js::Value(std::move(m)).dump());
 }
 
@@ -310,13 +360,15 @@ void App::SendLayers(int selected) {
     Send(js::Value(std::move(m)).dump());
 }
 
-void App::SendPreview(const std::wstring& path) {
+void App::SendPreview(const std::wstring& path, int bgTolerance) {
     js::Object m;
     m["t"] = "preview";
     m["path"] = ToUtf8(path);
+    // Must match previewKey() in the page.
+    m["key"] = ToUtf8(path) + (bgTolerance > 0 ? "|" + std::to_string(bgTolerance) : "");
     // 320px is plenty for the sidebar thumbnail and the mini-map, and keeps the
     // data URI small enough to post on every selection change.
-    m["uri"] = ImageToDataUri(path, 320);
+    m["uri"] = ImageToDataUri(path, 320, bgTolerance);
     Send(js::Value(std::move(m)).dump());
 }
 
@@ -401,7 +453,7 @@ void App::OnUiMessage(const std::string& json) {
     }
 
     if (cmd == "needPreview") {
-        SendPreview(ToWide(msg["path"].asString()));
+        SendPreview(ToWide(msg["path"].asString()), std::clamp(msg["bg"].asInt(0), 0, 100));
         return;
     }
 
@@ -443,6 +495,7 @@ void App::OnUiMessage(const std::string& json) {
         }
         settings_.minimizeToTray = s["minimizeToTray"].asBool(settings_.minimizeToTray);
         settings_.lightTheme = s["lightTheme"].asBool(settings_.lightTheme);
+        settings_.autoUpdate = s["autoUpdate"].asBool(settings_.autoUpdate);
 
         const bool wantTray = s["showTrayIcon"].asBool(settings_.showTrayIcon);
         if (wantTray != settings_.showTrayIcon) {
@@ -467,6 +520,16 @@ void App::OnUiMessage(const std::string& json) {
             m["warn"] = true;
             Send(js::Value(std::move(m)).dump());
         }
+        return;
+    }
+
+    if (cmd == "checkUpdate") {
+        StartUpdateCheck(true);
+        return;
+    }
+
+    if (cmd == "restartUpdate") {
+        RestartIntoUpdate();
         return;
     }
 
@@ -514,7 +577,7 @@ void App::BrowseImage(int index) {
     }
 
     SyncOverlay(index);
-    SendPreview(l.image);
+    SendPreview(l.image, BgKey(l));
     SendLayers(selected_);
 }
 
@@ -613,6 +676,84 @@ void App::RegisterHotkey() {
     }
 }
 
+// --- updates ---------------------------------------------------------------
+
+void App::StartUpdateCheck(bool manual) {
+    if (updateBusy_) return;
+    if (!updateReady_.empty()) {
+        // Already downloaded; checking again would only fetch the same file.
+        if (manual) SendUpdateState();
+        return;
+    }
+    updateBusy_ = true;
+    if (manual) SendUpdateState();
+
+    const HWND target = hidden_;
+    std::thread([target, manual] {
+        auto* r = new UpdateResult;
+        r->manual = manual;
+        r->info = CheckForUpdate();
+        if (r->info.ok && r->info.newer) {
+            r->installError = DownloadAndInstall(r->info);
+            r->installed = r->installError.empty();
+        }
+        if (!PostMessageW(target, WM_UPDATE_DONE, 0, reinterpret_cast<LPARAM>(r))) delete r;
+    }).detach();
+}
+
+void App::OnUpdateFinished(UpdateResult* result) {
+    std::unique_ptr<UpdateResult> r(result);
+    updateBusy_ = false;
+
+    std::string text;
+    bool warn = false;
+    if (r->installed) {
+        updateReady_ = r->info.version;
+        // Nobody is looking at the window: restart straight away, the overlays
+        // come back within a second. Otherwise leave the choice to the user.
+        if (!manager_ || !manager_->IsVisible()) {
+            RestartIntoUpdate();
+            return;
+        }
+    } else if (!r->info.ok) {
+        text = r->info.error;
+        warn = true;
+    } else if (!r->installError.empty()) {
+        text = "העדכון לגרסה " + r->info.version + " נכשל: " + r->installError;
+        warn = true;
+    } else if (!r->info.error.empty()) {
+        text = r->info.error;
+        warn = true;
+    } else {
+        text = std::string("זו הגרסה העדכנית ביותר (") + AppVersion() + ")";
+    }
+
+    SendUpdateState();
+    // A background check stays quiet unless it has something to show; a
+    // failed install is worth knowing about either way.
+    if (!text.empty() && (r->manual || !r->installError.empty())) {
+        js::Object t;
+        t["t"] = "toast";
+        t["text"] = text;
+        t["warn"] = warn;
+        Send(js::Value(std::move(t)).dump());
+    }
+}
+
+void App::RestartIntoUpdate() {
+    if (updateReady_.empty()) return;
+    const bool minimized = !manager_ || !manager_->IsVisible();
+    if (!RelaunchUpdated(minimized)) {
+        js::Object t;
+        t["t"] = "toast";
+        t["text"] = "לא ניתן היה להפעיל מחדש — הגרסה החדשה תיפתח בהפעלה הבאה";
+        t["warn"] = true;
+        Send(js::Value(std::move(t)).dump());
+        return;
+    }
+    RequestQuit();
+}
+
 void App::ShowManager() {
     if (manager_) manager_->Show();
 }
@@ -649,6 +790,18 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 case CMD_TOGGLE_ALL: SetAllHidden(!allHidden_); return 0;
                 case CMD_EXIT: RequestQuit(); return 0;
                 default: break;
+            }
+            break;
+
+        case WM_UPDATE_DONE:
+            OnUpdateFinished(reinterpret_cast<UpdateResult*>(lp));
+            return 0;
+
+        case WM_TIMER:
+            if (wp == kUpdateTimer) {
+                SetTimer(hidden_, kUpdateTimer, kCheckEveryMs, nullptr);
+                if (settings_.autoUpdate) StartUpdateCheck(false);
+                return 0;
             }
             break;
 

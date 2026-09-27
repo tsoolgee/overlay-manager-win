@@ -23,11 +23,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int) {
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     const bool startMinimized = cmdLine && wcsstr(cmdLine, L"/minimized") != nullptr;
+    const bool afterUpdate = cmdLine && wcsstr(cmdLine, L"/updated") != nullptr;
 
     int code = 0;
     {
         App app(inst);
-        if (app.Start(startMinimized)) code = app.Run();
+        if (app.Start(startMinimized, afterUpdate)) code = app.Run();
     }
 
     if (SUCCEEDED(com)) CoUninitialize();

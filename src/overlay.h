@@ -75,6 +75,7 @@ private:
     GeometryFn onGeometry_;
 
     std::wstring loadedPath_;
+    int loadedBg_ = 0;           // BgKey the bitmap was produced with
     // Gdiplus::Bitmap, type-erased so <gdiplus.h> stays out of this header.
     std::shared_ptr<void> bitmap_;
     int imageW_ = 0, imageH_ = 0;
@@ -95,7 +96,11 @@ void GdiPlusStop();
 
 // Reads an image file and returns "data:image/png;base64,...", scaled so the
 // longest side is at most `maxSide`. Feeds the preview in the manager UI.
-std::string ImageToDataUri(const std::wstring& path, int maxSide);
+// With bgTolerance > 0 the preview shows the background already removed.
+std::string ImageToDataUri(const std::wstring& path, int maxSide, int bgTolerance = 0);
+
+// The background-removal tolerance a layer's picture is drawn with; 0 = off.
+inline int BgKey(const Layer& l) { return l.removeBg ? l.bgTolerance : 0; }
 
 // Native pixel size of an image file, for the aspect-ratio lock.
 bool ImagePixelSize(const std::wstring& path, int& outW, int& outH);

@@ -730,6 +730,23 @@ dialog::backdrop { background: var(--scrim); }
   padding: 12px 18px;
   border-top: 1px solid var(--line);
 }
+.dlg-version {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.dlg-version .spacer { flex: 1; }
+.update-ready {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.update-ready.show { display: inline-flex; }
 .dlg-note {
   font-size: 12.5px;
   color: var(--muted);
@@ -826,6 +843,10 @@ dialog::backdrop { background: var(--scrim); }
     </button>
     <span class="hint" id="statusHint"></span>
     <div class="spacer"></div>
+    <span class="update-ready" id="updateReady">
+      <span id="updateReadyText"></span>
+      <button class="btn primary" id="btnRestartUpdate" type="button">הפעל מחדש</button>
+    </span>
     <span class="hint"><kbd id="hotkeyHint">Ctrl+Alt+H</kbd> מעלים ומציג הכל בכל מקום — נוח לצילומי מסך</span>
   </footer>
 </div>
@@ -851,6 +872,16 @@ dialog::backdrop { background: var(--scrim); }
         <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
         הצג סמל במגש המערכת
       </label>
+      <label class="check">
+        <input type="checkbox" id="setAutoUpdate">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        עדכון אוטומטי לגרסאות חדשות
+      </label>
+      <div class="dlg-version">
+        <span>גרסה <span dir="ltr" id="appVersion">—</span></span>
+        <span class="spacer"></span>
+        <button class="btn" id="btnCheckUpdate" type="button">בדוק עדכונים</button>
+      </div>
       <p class="dlg-note">
         בלי סמל במגש, הדרך היחידה לפתוח את החלון היא להריץ את הקובץ שוב.
         <kbd id="hotkeyHint2">Ctrl+Alt+H</kbd> ימשיך לעבוד בכל מקרה.
@@ -875,7 +906,8 @@ function send(msg) { if (HOST) HOST.postMessage(msg); }
 const state = {
   layers: [],
   monitors: [],
-  settings: { autoStart: false, minimizeToTray: true, showTrayIcon: true, lightTheme: false, hotkey: "Ctrl+Alt+H" },
+  settings: { autoStart: false, minimizeToTray: true, showTrayIcon: true, lightTheme: false, autoUpdate: true, hotkey: "Ctrl+Alt+H" },
+  update: { busy: false, ready: "" },
   selected: -1,
   previews: {},      // נתיב תמונה -> data URI
   positionIndex: -1, // השכבה שנמצאת כרגע במצב מיקום על המסך
@@ -907,17 +939,24 @@ function baseName(path) {
   return i >= 0 ? path.slice(i + 1) : path;
 }
 
+// התצוגה המקדימה תלויה גם בהסרת הרקע, לכן המפתח כולל את הרגישות.
+// חייב להתאים ל-SendPreview בצד ה-C++.
+function previewKey(layer) {
+  return layer.image + (layer.removeBg ? "|" + layer.bgTolerance : "");
+}
+
 function previewFor(layer) {
-  return layer && layer.image ? state.previews[layer.image] : null;
+  return layer && layer.image ? state.previews[previewKey(layer)] : null;
 }
 
 // מבקש תמונת תצוגה מקדימה מצד ה-C++ פעם אחת לכל נתיב.
 const requested = new Set();
 function ensurePreview(layer) {
   if (!layer || !layer.image) return;
-  if (state.previews[layer.image] !== undefined || requested.has(layer.image)) return;
-  requested.add(layer.image);
-  send({ c: "needPreview", path: layer.image });
+  const key = previewKey(layer);
+  if (state.previews[key] !== undefined || requested.has(key)) return;
+  requested.add(key);
+  send({ c: "needPreview", path: layer.image, bg: layer.removeBg ? layer.bgTolerance : 0 });
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,6 +1172,19 @@ function renderEditor() {
           </label>
         </div>
         <div class="row">
+          <label>רקע</label>
+          <label class="check" title="הופך לשקוף את הרקע האחיד של לוגו שנשמר בלי שקיפות">
+            <input type="checkbox" id="fRemoveBg" ${l.removeBg ? "checked" : ""}>
+            <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+            הסר רקע
+          </label>
+        </div>
+        ${l.removeBg ? `<div class="slider-row">
+          <label for="fBgTol">רגישות</label>
+          <input type="range" id="fBgTol" min="1" max="100" step="1" value="${l.bgTolerance}">
+          <output id="outBgTol">${l.bgTolerance}</output>
+        </div>` : ""}
+        <div class="row">
           <span></span>
           <label class="check">
             <input type="checkbox" id="fClick" ${l.clickThrough ? "checked" : ""}>
@@ -1268,6 +1320,12 @@ function wireEditor(l) {
 
   $("fTint").addEventListener("change", (e) => patch(idx, { useTint: e.target.checked }));
   $("fGray").addEventListener("change", (e) => patch(idx, { grayscale: e.target.checked }));
+  $("fRemoveBg").addEventListener("change", (e) => patch(idx, { removeBg: e.target.checked }));
+  if ($("fBgTol")) {
+    // המספר מתעדכן בזמן הגרירה; החישוב עצמו רק כשעוזבים את המחוון.
+    $("fBgTol").addEventListener("input", (e) => { $("outBgTol").textContent = e.target.value; });
+    $("fBgTol").addEventListener("change", (e) => patch(idx, { bgTolerance: +e.target.value }));
+  }
   $("fClick").addEventListener("change", (e) => patch(idx, { clickThrough: e.target.checked }));
 
   $("btnBrowse").addEventListener("click", () => send({ c: "browse", i: idx }));
@@ -1347,6 +1405,7 @@ function applySettings() {
   $("setAutoStart").checked = state.settings.autoStart;
   $("setTray").checked = state.settings.minimizeToTray;
   $("setTrayIcon").checked = state.settings.showTrayIcon;
+  $("setAutoUpdate").checked = state.settings.autoUpdate;
   $("hotkeyHint").textContent = state.settings.hotkey;
   $("hotkeyHint2").textContent = state.settings.hotkey;
   applyTheme();
@@ -1356,6 +1415,7 @@ function pushSettings() {
   state.settings.autoStart = $("setAutoStart").checked;
   state.settings.minimizeToTray = $("setTray").checked;
   state.settings.showTrayIcon = $("setTrayIcon").checked;
+  state.settings.autoUpdate = $("setAutoUpdate").checked;
   send({ c: "settings", settings: state.settings });
 }
 
@@ -1377,7 +1437,17 @@ $("btnTheme").addEventListener("click", () => {
 });
 $("btnSettings").addEventListener("click", () => $("settingsDlg").showModal());
 $("btnExit").addEventListener("click", () => send({ c: "exit" }));
-["setAutoStart", "setTray", "setTrayIcon"].forEach((id) =>
+$("btnCheckUpdate").addEventListener("click", () => send({ c: "checkUpdate" }));
+$("btnRestartUpdate").addEventListener("click", () => send({ c: "restartUpdate" }));
+
+function applyUpdate() {
+  const u = state.update;
+  $("btnCheckUpdate").disabled = u.busy || !!u.ready;
+  $("btnCheckUpdate").textContent = u.busy ? "בודק…" : u.ready ? "העדכון מוכן" : "בדוק עדכונים";
+  $("updateReady").classList.toggle("show", !!u.ready);
+  $("updateReadyText").textContent = u.ready ? `גרסה ${u.ready} הותקנה` : "";
+}
+["setAutoStart", "setTray", "setTrayIcon", "setAutoUpdate"].forEach((id) =>
   $(id).addEventListener("change", pushSettings));
 
 document.addEventListener("keydown", (e) => {
@@ -1401,6 +1471,7 @@ if (HOST) {
         state.layers = m.layers || [];
         state.selected = m.selected != null ? m.selected : (state.layers.length ? 0 : -1);
         state.dirty = false;
+        $("appVersion").textContent = m.version || "—";
         applySettings();
         updateStatus();
         renderList();
@@ -1416,7 +1487,7 @@ if (HOST) {
         break;
 
       case "preview":
-        state.previews[m.path] = m.uri || null;
+        state.previews[m.key || m.path] = m.uri || null;
         renderList();
         renderMini();
         break;
@@ -1441,6 +1512,11 @@ if (HOST) {
       case "toast":
         toast(m.text, m.warn);
         break;
+
+      case "update":
+        state.update = { busy: !!m.busy, ready: m.ready || "" };
+        applyUpdate();
+        break;
     }
   });
   send({ c: "ready" });
@@ -1451,7 +1527,7 @@ if (HOST) {
     name: "לוגו", image: "", enabled: true, width: 240, height: 120, lockAspect: true,
     monitor: 0, anchorH: 2, anchorV: 2, offsetX: 2, offsetY: 2, opacity: 200,
     useTint: false, tintR: 255, tintG: 255, tintB: 255, rotation: 0,
-    clickThrough: true, grayscale: false,
+    clickThrough: true, grayscale: false, removeBg: false, bgTolerance: 25,
   }];
   state.selected = 0;
   applySettings();

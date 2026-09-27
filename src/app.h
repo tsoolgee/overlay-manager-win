@@ -16,7 +16,7 @@ public:
     explicit App(HINSTANCE inst);
     ~App();
 
-    bool Start(bool startMinimized);
+    bool Start(bool startMinimized, bool afterUpdate);
     int Run();
 
 private:
@@ -24,7 +24,8 @@ private:
     void OnUiMessage(const std::string& json);
     void SendInit();
     void SendLayers(int selected);
-    void SendPreview(const std::wstring& path);
+    void SendPreview(const std::wstring& path, int bgTolerance);
+    void SendUpdateState();
     void Send(const std::string& json);
 
     // --- overlays ---
@@ -39,6 +40,11 @@ private:
     void UpdateTrayIcon();
     void ShowTrayMenu();
     void RegisterHotkey();
+
+    // --- updates ---
+    void StartUpdateCheck(bool manual);
+    void OnUpdateFinished(struct UpdateResult* result);
+    void RestartIntoUpdate();
 
     void ShowManager();
     void RequestQuit();
@@ -62,6 +68,10 @@ private:
     bool allHidden_ = false;
     bool trayAdded_ = false;
     bool quitting_ = false;
+
+    bool updateBusy_ = false;
+    std::string updateReady_;    // version installed and waiting for a restart
+    bool justUpdated_ = false;   // started by the updater; say so once
 
     std::unique_ptr<ManagerWindow> manager_;
 };

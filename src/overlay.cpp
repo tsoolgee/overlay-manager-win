@@ -7,7 +7,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <memory>
+#include <vector>
 
 #include "util.h"
 
@@ -212,6 +215,113 @@ static std::unique_ptr<Bitmap> OpenImageFile(const std::wstring& path) {
     return std::unique_ptr<Bitmap>(DecodeWithWic(path));
 }
 
+static double ColorDistance(uint32_t a, uint32_t b) {
+    const int dr = (int)((a >> 16) & 0xFF) - (int)((b >> 16) & 0xFF);
+    const int dg = (int)((a >> 8) & 0xFF) - (int)((b >> 8) & 0xFF);
+    const int db = (int)(a & 0xFF) - (int)(b & 0xFF);
+    return std::sqrt((double)(dr * dr + dg * dg + db * db));
+}
+
+// Clears the flat background of a picture saved without transparency. The
+// background colour is the one most of the four corners agree on; pixels of
+// that colour are removed only where they connect to the image's edge, so a
+// white letter inside a logo on a white square stays white. Pixels near the
+// threshold fade out and have the background colour un-blended from them, so
+// anti-aliased edges do not keep a pale halo.
+static std::unique_ptr<Bitmap> RemoveBackground(Bitmap& src, int tolerance) {
+    const int w = (int)src.GetWidth(), h = (int)src.GetHeight();
+    if (w <= 0 || h <= 0) return nullptr;
+
+    std::vector<uint32_t> px((size_t)w * h);
+    {
+        BitmapData data{};
+        Rect rc(0, 0, w, h);
+        if (src.LockBits(&rc, ImageLockModeRead, PixelFormat32bppARGB, &data) != Ok) return nullptr;
+        for (int y = 0; y < h; ++y)
+            memcpy(&px[(size_t)y * w], static_cast<BYTE*>(data.Scan0) + (size_t)y * data.Stride,
+                   (size_t)w * 4);
+        src.UnlockBits(&data);
+    }
+
+    const uint32_t corners[4] = {px[0], px[(size_t)w - 1], px[(size_t)(h - 1) * w],
+                                 px[(size_t)h * w - 1]};
+    int best = 0, bestVotes = -1;
+    for (int i = 0; i < 4; ++i) {
+        int votes = 0;
+        for (int j = 0; j < 4; ++j)
+            if (ColorDistance(corners[i], corners[j]) < 30) ++votes;
+        if (votes > bestVotes) { best = i; bestVotes = votes; }
+    }
+    const uint32_t key = corners[best];
+    // Already transparent at the corners: there is no background to remove.
+    if ((key >> 24) < 128) return nullptr;
+
+    const double thresh = std::clamp(tolerance, 1, 100) * 2.55;
+    const double inner = thresh * 0.5;
+
+    // Flood fill from every edge pixel close enough to the key colour.
+    std::vector<uint8_t> bg(px.size(), 0);
+    std::vector<int> stack;
+    auto seed = [&](int x, int y) {
+        const size_t i = (size_t)y * w + x;
+        if (!bg[i] && ColorDistance(px[i], key) <= thresh) {
+            bg[i] = 1;
+            stack.push_back((int)i);
+        }
+    };
+    for (int x = 0; x < w; ++x) { seed(x, 0); seed(x, h - 1); }
+    for (int y = 0; y < h; ++y) { seed(0, y); seed(w - 1, y); }
+    while (!stack.empty()) {
+        const int i = stack.back();
+        stack.pop_back();
+        const int x = i % w, y = i / w;
+        if (x > 0) seed(x - 1, y);
+        if (x + 1 < w) seed(x + 1, y);
+        if (y > 0) seed(x, y - 1);
+        if (y + 1 < h) seed(x, y + 1);
+    }
+
+    const double kr = (key >> 16) & 0xFF, kg = (key >> 8) & 0xFF, kb = key & 0xFF;
+    for (size_t i = 0; i < px.size(); ++i) {
+        if (!bg[i]) continue;
+        const double d = ColorDistance(px[i], key);
+        if (d <= inner) {
+            px[i] = 0;
+            continue;
+        }
+        const double a = (d - inner) / (thresh - inner);
+        auto unblend = [&](uint32_t c, double k) {
+            return (uint32_t)std::clamp((c - k * (1 - a)) / a, 0.0, 255.0);
+        };
+        const uint32_t r = unblend((px[i] >> 16) & 0xFF, kr);
+        const uint32_t g = unblend((px[i] >> 8) & 0xFF, kg);
+        const uint32_t b = unblend(px[i] & 0xFF, kb);
+        const uint32_t al = (uint32_t)std::lround((px[i] >> 24) * a);
+        px[i] = (al << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    auto out = std::make_unique<Bitmap>(w, h, PixelFormat32bppARGB);
+    BitmapData data{};
+    Rect rc(0, 0, w, h);
+    if (out->GetLastStatus() != Ok ||
+        out->LockBits(&rc, ImageLockModeWrite, PixelFormat32bppARGB, &data) != Ok)
+        return nullptr;
+    for (int y = 0; y < h; ++y)
+        memcpy(static_cast<BYTE*>(data.Scan0) + (size_t)y * data.Stride, &px[(size_t)y * w],
+               (size_t)w * 4);
+    out->UnlockBits(&data);
+    return out;
+}
+
+// The layer's picture as it will be drawn: decoded, and with the background
+// cleared when bgTolerance > 0.
+static std::unique_ptr<Bitmap> OpenLayerImage(const std::wstring& path, int bgTolerance) {
+    auto bmp = OpenImageFile(path);
+    if (bmp && bgTolerance > 0)
+        if (auto cleared = RemoveBackground(*bmp, bgTolerance)) return cleared;
+    return bmp;
+}
+
 bool ImagePixelSize(const std::wstring& path, int& outW, int& outH) {
     if (path.empty()) return false;
     auto bmp = OpenImageFile(path);
@@ -221,9 +331,9 @@ bool ImagePixelSize(const std::wstring& path, int& outW, int& outH) {
     return outW > 0 && outH > 0;
 }
 
-std::string ImageToDataUri(const std::wstring& path, int maxSide) {
+std::string ImageToDataUri(const std::wstring& path, int maxSide, int bgTolerance) {
     if (path.empty()) return {};
-    auto srcBmp = OpenImageFile(path);
+    auto srcBmp = OpenLayerImage(path, bgTolerance);
     if (!srcBmp) return {};
     Bitmap& src = *srcBmp;
 
@@ -302,7 +412,7 @@ OverlayWindow::~OverlayWindow() {
 }
 
 void OverlayWindow::Update(const Layer& layer) {
-    const bool imageChanged = layer.image != loadedPath_;
+    const bool imageChanged = layer.image != loadedPath_ || BgKey(layer) != loadedBg_;
     const bool clickThroughChanged = layer.clickThrough != layer_.clickThrough;
     layer_ = layer;
     if (imageChanged) LoadLayerImage();
@@ -341,11 +451,12 @@ void OverlayWindow::Reposition() { Render(); }
 
 void OverlayWindow::LoadLayerImage() {
     loadedPath_ = layer_.image;
+    loadedBg_ = BgKey(layer_);
     bitmap_.reset();
     imageW_ = imageH_ = 0;
     if (loadedPath_.empty()) return;
 
-    auto* bmp = OpenImageFile(loadedPath_).release();
+    auto* bmp = OpenLayerImage(loadedPath_, loadedBg_).release();
     if (!bmp) return;
     imageW_ = (int)bmp->GetWidth();
     imageH_ = (int)bmp->GetHeight();

@@ -82,6 +82,7 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
     settings.minimizeToTray = GetInt(kGeneral, L"MinimizeToTray", 1, path) != 0;
     settings.showTrayIcon   = GetInt(kGeneral, L"ShowTrayIcon", 1, path) != 0;
     settings.lightTheme     = GetInt(kGeneral, L"LightTheme", 0, path) != 0;
+    settings.autoUpdate     = GetInt(kGeneral, L"AutoUpdate", 1, path) != 0;
     settings.hotkeyMods     = (unsigned)GetInt(kGeneral, L"HotkeyMods",
                                                MOD_CONTROL | MOD_ALT, path);
     settings.hotkeyVk       = (unsigned)GetInt(kGeneral, L"HotkeyVk", 'H', path);
@@ -114,6 +115,8 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
         l.rotation     = GetDouble(s, L"Rotation", 0.0, path);
         l.clickThrough = GetInt(s, L"ClickThrough", 1, path) != 0;
         l.grayscale    = GetInt(s, L"Grayscale", 0, path) != 0;
+        l.removeBg     = GetInt(s, L"RemoveBg", 0, path) != 0;
+        l.bgTolerance  = GetInt(s, L"BgTolerance", 25, path);
         layers.push_back(std::move(l));
     }
     return true;
@@ -130,6 +133,7 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
     PutInt(text, L"MinimizeToTray", settings.minimizeToTray ? 1 : 0);
     PutInt(text, L"ShowTrayIcon", settings.showTrayIcon ? 1 : 0);
     PutInt(text, L"LightTheme", settings.lightTheme ? 1 : 0);
+    PutInt(text, L"AutoUpdate", settings.autoUpdate ? 1 : 0);
     PutInt(text, L"HotkeyMods", settings.hotkeyMods);
     PutInt(text, L"HotkeyVk", settings.hotkeyVk);
 
@@ -157,6 +161,8 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
         PutDouble(text, L"Rotation", l.rotation);
         PutInt(text, L"ClickThrough", l.clickThrough ? 1 : 0);
         PutInt(text, L"Grayscale", l.grayscale ? 1 : 0);
+        PutInt(text, L"RemoveBg", l.removeBg ? 1 : 0);
+        PutInt(text, L"BgTolerance", l.bgTolerance);
     }
 
     const std::wstring path = ConfigPath();

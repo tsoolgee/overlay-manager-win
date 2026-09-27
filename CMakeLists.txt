@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(OverlayManager VERSION 3.1.0 LANGUAGES CXX)
+project(OverlayManager VERSION 3.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,9 +18,15 @@ add_executable(OverlayManager WIN32
   src/json.cpp
   src/manager.cpp
   src/overlay.cpp
+  src/updater.cpp
   src/util.cpp
   res/app.rc
 )
+
+# One version number, from project() above: the updater compares it against
+# the latest release tag, and the .rc stamps it into the file properties.
+configure_file(res/version.h.in "${CMAKE_BINARY_DIR}/generated/version.h" @ONLY)
+target_include_directories(OverlayManager PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
 target_compile_definitions(OverlayManager PRIVATE
   UNICODE _UNICODE
@@ -79,7 +85,7 @@ target_include_directories(OverlayManager PRIVATE
 # The static loader keeps this a single file: no WebView2Loader.dll to ship.
 target_link_libraries(OverlayManager PRIVATE
   "${WEBVIEW2_DIR}/build/native/${_wv2_arch}/WebView2LoaderStatic.lib"
-  gdiplus windowscodecs comctl32 comdlg32 shell32 advapi32 user32 gdi32 ole32 shlwapi version
+  gdiplus windowscodecs winhttp bcrypt comctl32 comdlg32 shell32 advapi32 user32 gdi32 ole32 shlwapi version
 )
 
 set_target_properties(OverlayManager PROPERTIES OUTPUT_NAME "OverlayManager")

@@ -34,6 +34,13 @@ struct Layer {
     double rotation = 0.0;       // degrees, clockwise
     bool clickThrough = true;    // pass mouse events to whatever is underneath
     bool grayscale = false;
+
+    // Turns the flat background of a logo saved without transparency (a white
+    // or coloured square) see-through. The colour is taken from the image's
+    // corners, and only the area connected to the edges is cleared, so the
+    // same colour inside the logo survives.
+    bool removeBg = false;
+    int bgTolerance = 25;        // 1..100
 };
 
 struct Settings {
@@ -41,6 +48,7 @@ struct Settings {
     bool minimizeToTray = true;
     bool showTrayIcon = true;
     bool lightTheme = false;
+    bool autoUpdate = true;      // check GitHub Releases and install newer builds
     // Global show/hide hotkey, stored as MOD_* flags plus a virtual key.
     unsigned hotkeyMods = 0;
     unsigned hotkeyVk = 0;
