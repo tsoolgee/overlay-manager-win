@@ -3,9 +3,11 @@
 #include <windowsx.h>
 #include <objidl.h>
 #include <gdiplus.h>
+#include <wincodec.h>
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 #include "util.h"
 
@@ -163,19 +165,67 @@ const MonitorInfo& MonitorAt(int index) {
     return list[index];
 }
 
+// GDI+ knows PNG/JPEG/BMP/GIF/TIFF only; WebP (and HEIC, when its codec is
+// installed) comes through WIC, which Windows 10 1809+ ships a WebP decoder for.
+static Bitmap* DecodeWithWic(const std::wstring& path) {
+    IWICImagingFactory* factory = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&factory))))
+        return nullptr;
+
+    Bitmap* out = nullptr;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* conv = nullptr;
+    UINT w = 0, h = 0;
+    if (SUCCEEDED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                     WICDecodeMetadataCacheOnDemand, &decoder)) &&
+        SUCCEEDED(decoder->GetFrame(0, &frame)) &&
+        SUCCEEDED(factory->CreateFormatConverter(&conv)) &&
+        SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
+                                   nullptr, 0.0, WICBitmapPaletteTypeCustom)) &&
+        SUCCEEDED(conv->GetSize(&w, &h)) && w && h) {
+        auto* bmp = new Bitmap((INT)w, (INT)h, PixelFormat32bppARGB);
+        BitmapData data{};
+        Rect rc(0, 0, (INT)w, (INT)h);
+        if (bmp->GetLastStatus() == Ok &&
+            bmp->LockBits(&rc, ImageLockModeWrite, PixelFormat32bppARGB, &data) == Ok) {
+            const HRESULT hr = conv->CopyPixels(nullptr, (UINT)data.Stride,
+                                                (UINT)data.Stride * h,
+                                                static_cast<BYTE*>(data.Scan0));
+            bmp->UnlockBits(&data);
+            if (SUCCEEDED(hr)) out = bmp;
+        }
+        if (!out) delete bmp;
+    }
+    if (conv) conv->Release();
+    if (frame) frame->Release();
+    if (decoder) decoder->Release();
+    factory->Release();
+    return out;
+}
+
+static std::unique_ptr<Bitmap> OpenImageFile(const std::wstring& path) {
+    if (path.empty()) return nullptr;
+    std::unique_ptr<Bitmap> bmp(Bitmap::FromFile(path.c_str(), FALSE));
+    if (bmp && bmp->GetLastStatus() == Ok) return bmp;
+    return std::unique_ptr<Bitmap>(DecodeWithWic(path));
+}
+
 bool ImagePixelSize(const std::wstring& path, int& outW, int& outH) {
     if (path.empty()) return false;
-    Bitmap bmp(path.c_str(), FALSE);
-    if (bmp.GetLastStatus() != Ok) return false;
-    outW = (int)bmp.GetWidth();
-    outH = (int)bmp.GetHeight();
+    auto bmp = OpenImageFile(path);
+    if (!bmp) return false;
+    outW = (int)bmp->GetWidth();
+    outH = (int)bmp->GetHeight();
     return outW > 0 && outH > 0;
 }
 
 std::string ImageToDataUri(const std::wstring& path, int maxSide) {
     if (path.empty()) return {};
-    Bitmap src(path.c_str(), FALSE);
-    if (src.GetLastStatus() != Ok) return {};
+    auto srcBmp = OpenImageFile(path);
+    if (!srcBmp) return {};
+    Bitmap& src = *srcBmp;
 
     const int sw = (int)src.GetWidth(), sh = (int)src.GetHeight();
     if (sw <= 0 || sh <= 0) return {};
@@ -295,12 +345,8 @@ void OverlayWindow::LoadLayerImage() {
     imageW_ = imageH_ = 0;
     if (loadedPath_.empty()) return;
 
-    auto* bmp = Bitmap::FromFile(loadedPath_.c_str(), FALSE);
+    auto* bmp = OpenImageFile(loadedPath_).release();
     if (!bmp) return;
-    if (bmp->GetLastStatus() != Ok) {
-        delete bmp;
-        return;
-    }
     imageW_ = (int)bmp->GetWidth();
     imageH_ = (int)bmp->GetHeight();
     bitmap_ = std::shared_ptr<void>(bmp, [](void* p) { delete static_cast<Bitmap*>(p); });

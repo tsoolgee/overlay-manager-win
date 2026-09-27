@@ -63,6 +63,10 @@ js::Value LayerToJson(const Layer& l) {
     // A layer whose picture has been moved or deleted still has a path, and
     // used to render as an unexplained blank. Say so instead.
     o["missing"] = !l.image.empty() && !readable;
+    // The file is there but no decoder could open it: a different fix than
+    // re-picking it, so the page words it differently.
+    o["unreadable"] = !l.image.empty() && !readable &&
+                      GetFileAttributesW(l.image.c_str()) != INVALID_FILE_ATTRIBUTES;
     return js::Value(std::move(o));
 }
 

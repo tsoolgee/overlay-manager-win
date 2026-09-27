@@ -939,7 +939,7 @@ function renderList() {
     const uri = previewFor(l);
     const mon = state.monitors[l.monitor];
     const sub = l.missing
-      ? `<span class="warn">הקובץ לא נמצא</span>`
+      ? `<span class="warn">${l.unreadable ? "לא ניתן לקרוא את הקובץ" : "הקובץ לא נמצא"}</span>`
       : `<span dir="ltr">${l.width}×${l.height}</span>  ·  ${esc(mon ? "מסך " + (l.monitor + 1) : "מסך ?")}  ·  ${Math.round(l.opacity / 255 * 100)}%`;
 
     row.innerHTML = `
@@ -1050,7 +1050,7 @@ function renderEditor() {
         </div>
         ${l.missing ? `<div class="row"><span></span><span class="file-warn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 8v5M12 16.5v.01"/><path d="M10.3 3.9 2.4 17.5A1.8 1.8 0 0 0 4 20.2h16a1.8 1.8 0 0 0 1.6-2.7L13.7 3.9a1.8 1.8 0 0 0-3.1 0z"/></svg>
-          הקובץ לא נמצא בנתיב הזה — בחרו אותו מחדש</span></div>` : ""}
+          ${l.unreadable ? "לא ניתן לקרוא את הקובץ — הפורמט לא נתמך או שהקובץ פגום" : "הקובץ לא נמצא בנתיב הזה — בחרו אותו מחדש"}</span></div>` : ""}
       </fieldset>
 
       <fieldset>
@@ -1309,7 +1309,7 @@ function refreshRow(i) {
   const mon = state.monitors[l.monitor];
   // חייב להתאים ל-renderList, אחרת עריכה חיה הייתה מוחקת את אזהרת הקובץ החסר
   row.querySelector(".sub").innerHTML = l.missing
-    ? `<span class="warn">הקובץ לא נמצא</span>`
+    ? `<span class="warn">${l.unreadable ? "לא ניתן לקרוא את הקובץ" : "הקובץ לא נמצא"}</span>`
     : `<span dir="ltr">${l.width}×${l.height}</span>  ·  ${esc(mon ? "מסך " + (l.monitor + 1) : "מסך ?")}  ·  ${Math.round(l.opacity / 255 * 100)}%`;
   row.classList.toggle("off", !l.enabled);
   row.querySelector(".switch").setAttribute("aria-checked", String(l.enabled));
