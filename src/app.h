@@ -50,6 +50,15 @@ private:
     void SetHotkey(bool cycle, unsigned mods, unsigned vk);
     void ShowNextLayer();
 
+    // --- statistics and resets ---
+    void AccountUsage();
+    void SendStats();
+    void ResetSettings();
+    void ResetAll();
+    void UndoReset();
+    void Toast(const std::string& text, bool warn, const char* action = nullptr,
+               const char* actionLabel = nullptr);
+
     // --- updates ---
     void StartUpdateCheck(bool manual, bool install);
     void OnUpdateFinished(struct UpdateResult* result);
@@ -81,6 +90,8 @@ private:
     bool trayAdded_ = false;
     bool hotkeyOk_ = true;          // false while another program owns the combination
     bool cycleOk_ = true;           // the same, for the next-layer key
+    unsigned long long lastUsageTick_ = 0;  // GetTickCount64 at the last usage count
+    int usageTicks_ = 0;                    // counts since the last save
     bool quitting_ = false;
 
     bool updateBusy_ = false;

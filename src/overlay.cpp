@@ -214,10 +214,12 @@ static Bitmap* DecodeWithWic(const std::wstring& path) {
 static std::unique_ptr<Bitmap> InMemoryCopy(Bitmap& src);
 
 namespace {
-struct StickerDef { const wchar_t* name; int id; };
+// width: the size a layer gets when the sticker is picked (height follows the
+// picture's proportions).
+struct StickerDef { const wchar_t* name; int id; int width; };
 const StickerDef kStickers[] = {
-    {L"out-net", IDR_STICKER_OUTNET},
-    {L"wifree", IDR_STICKER_WIFREE},
+    {L"out-net", IDR_STICKER_OUTNET, 170},
+    {L"wifree", IDR_STICKER_WIFREE, 200},
 };
 const wchar_t kStickerPrefix[] = L"sticker:";
 }  // namespace
@@ -231,6 +233,14 @@ std::vector<std::wstring> StickerNames() {
 bool IsStickerPath(const std::wstring& image) { return image.rfind(kStickerPrefix, 0) == 0; }
 
 std::wstring StickerPath(const std::wstring& name) { return kStickerPrefix + name; }
+
+int StickerDefaultWidth(const std::wstring& image) {
+    if (!IsStickerPath(image)) return 0;
+    const std::wstring name = image.substr(wcslen(kStickerPrefix));
+    for (const auto& s : kStickers)
+        if (name == s.name) return s.width;
+    return 0;
+}
 
 // A built-in sticker, decoded from the PNG embedded in the executable. GDI+
 // reads a stream-backed Bitmap lazily, so the stream must outlive it — unless

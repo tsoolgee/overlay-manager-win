@@ -41,6 +41,11 @@ struct Layer {
     // same colour inside the logo survives.
     bool removeBg = false;
     int bgTolerance = 25;        // 1..100
+
+    // How long this layer has been on screen, for the statistics in the
+    // settings. Counted only while it is enabled, has a picture and
+    // "hide all" is off.
+    double usageSeconds = 0.0;
 };
 
 struct Settings {
@@ -55,6 +60,7 @@ struct Settings {
     // Global "show the next layer, hide the others" hotkey; vk 0 = off.
     unsigned cycleMods = 0;
     unsigned cycleVk = 0;
+    std::string statsSince;      // "YYYY-MM-DD": when usage counting began
 };
 
 // Loads/saves %APPDATA%\Floaty\config.ini in the same layout Overlay Manager

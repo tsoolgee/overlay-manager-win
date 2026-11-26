@@ -114,3 +114,5 @@ bool ImagePixelSize(const std::wstring& path, int& outW, int& outH);
 std::vector<std::wstring> StickerNames();
 bool IsStickerPath(const std::wstring& image);
 std::wstring StickerPath(const std::wstring& name);
+// The width a layer gets when this sticker is picked; 0 if it is not a sticker.
+int StickerDefaultWidth(const std::wstring& image);

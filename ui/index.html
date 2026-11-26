@@ -340,15 +340,16 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .editor-head .title-input:focus { outline: none; border-color: var(--accent); background: var(--field); }
 .editor-head .shown { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
 
-.editor-layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
-.col-form { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.col-preview { min-width: 0; }
-/* במסך צר התצוגה המקדימה עולה מעל הטופס; ברחב היא יושבת לצידו ונשארת גלויה בגלילה */
-.col-preview { order: -1; }
-@container editor (min-width: 900px) {
-  .editor-layout { grid-template-columns: minmax(0, 1fr) 340px; align-items: start; }
-  .col-preview { order: 0; position: sticky; top: 0; }
-  .pos-bar ~ .editor-layout .col-preview { top: 64px; }
+/* שתי עמודות בגובה דומה, כדי שלא יהיה חלל ריק בצד אחד וגלילה ארוכה בצד השני:
+   מימין התוכן (תמונה, גודל ומיקום), משמאל התצוגה, המראה וההתנהגות.
+   בעמודה אחת הכרטיסים נפרסים ברצף, והתצוגה המקדימה עולה ראשונה. */
+.editor-layout { display: flex; flex-direction: column; gap: 16px; }
+.editor-layout > .col { display: contents; }
+.editor-layout .preview { order: -1; }
+@container editor (min-width: 820px) {
+  .editor-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  .editor-layout > .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .editor-layout .preview { order: 0; }
 }
 
 .card {
@@ -365,7 +366,10 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 .field { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 12px; }
 .field > .label { font-size: 13px; color: var(--ink-2); font-weight: 600; }
-@container editor (max-width: 560px) {
+/* כל כרטיס הוא מכל משלו: התוויות עוברות מעל השדות לפי רוחב הכרטיס עצמו,
+   שבפריסה בשתי עמודות צר בהרבה מהעורך כולו. */
+.editor-layout .card { container-type: inline-size; }
+@container (max-width: 400px) {
   .field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 }
 
@@ -529,7 +533,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 3px solid col
 
 /* לוח העיגון: שמאל הוא שמאל המסך, גם בממשק בעברית */
 .anchor-block { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: center; }
-@container editor (max-width: 560px) { .anchor-block { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 400px) { .anchor-block { grid-template-columns: minmax(0, 1fr); } }
 .anchor-pad {
   direction: ltr;
   display: grid;
@@ -599,14 +603,14 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 3px solid col
 .facts dd { font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview .btn { width: 100%; height: 38px; }
 /* כשהתצוגה עולה מעל הטופס היא נשכבת לרוחב ונשארת קטנה, כדי לא לדחוק את הטופס מתחת לקיפול */
-@container editor (max-width: 899px) {
+/* בעמודה אחת רחבה התצוגה נשכבת לרוחב; בעמודה צרה המסך המוקטן מוגבל בגודלו */
+@container editor (min-width: 561px) and (max-width: 819px) {
   .preview { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); align-items: start; gap: 12px 18px; }
   .preview > h3 { grid-column: 1 / -1; margin-bottom: 0; }
   .preview .screen { grid-row: span 2; }
 }
 @container editor (max-width: 560px) {
-  .preview { grid-template-columns: minmax(0, 1fr); }
-  .preview .screen { grid-row: auto; max-width: 300px; justify-self: center; }
+  .preview .screen { max-width: 300px; margin-inline: auto; }
 }
 
 /* ---------- מצב ריק ---------- */
@@ -709,6 +713,18 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
 /* עמודות קבועות, כדי שהצירופים והכפתורים יעמדו זה מתחת לזה בשתי השורות */
 .hk-row { display: grid; grid-template-columns: minmax(0, 1fr) 104px auto 64px; align-items: center; gap: 8px; }
 .hk-what { font-size: 13.5px; }
+.reset-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; font-size: 13.5px; }
+.reset-row small { display: block; color: var(--muted); font-size: 12px; }
+.stats { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.stats .top { font-size: 13.5px; }
+.stats .row { display: grid; grid-template-columns: minmax(0, 9em) minmax(0, 1fr) 7.5em; align-items: center; gap: 10px; }
+.stats .row .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stats .row .t { color: var(--ink-2); font-variant-numeric: tabular-nums; text-align: end; }
+.stats .bar { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.stats .bar i { display: block; height: 100%; background: var(--accent-fill); border-radius: 99px; }
+.stats .row.best .n { font-weight: 700; }
+.stats .foot { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.stats .foot .btn { margin-inline-start: auto; }
 .hk-what small { display: block; color: var(--muted); font-size: 12px; }
 .hk-row kbd { font-size: 12px; padding: 5px 8px; text-align: center; }
 .hk-row kbd.off { color: var(--muted); font-weight: 400; }
@@ -777,8 +793,12 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
         <button class="btn" id="btnDown" title="העבר את השכבה מתחת לזו שמתחתיה ברשימה" aria-label="העבר למטה">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M18 13l-6 6-6-6"/></svg>
         </button>
-        <button class="btn" id="btnDup" title="יוצר עותק של השכבה הנבחרת">שכפל</button>
-        <button class="btn danger" id="btnDel" title="מוחק את השכבה הנבחרת">מחק</button>
+        <button class="btn" id="btnDup" title="שכפול השכבה הנבחרת" aria-label="שכפול השכבה הנבחרת">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>
+        </button>
+        <button class="btn danger" id="btnDel" title="מחיקת השכבה הנבחרת" aria-label="מחיקת השכבה הנבחרת">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg>
+        </button>
       </div>
     </aside>
 
@@ -806,7 +826,7 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
     <section class="dlg-section">
       <h3>קיצורי מקלדת</h3>
       <div class="hk-row">
-        <span class="hk-what">הסתרה והצגה של הכול<small>מכל מקום במחשב, למשל לפני צילום מסך</small></span>
+        <span class="hk-what">הצגה והסתרה אוטומטית<small>מכל מקום במחשב, למשל לפני צילום מסך</small></span>
         <kbd id="hkToggle"></kbd>
         <button class="btn small" data-hk="toggle">שינוי</button>
         <span></span>
@@ -828,6 +848,21 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
         <button class="btn small" id="btnCheckUpdate">בדוק עכשיו</button>
       </div>
       <p class="note" id="updateDetails" role="status"></p>
+    </section>
+    <section class="dlg-section">
+      <h3>סטטיסטיקה</h3>
+      <div class="stats" id="statsBody"><p class="note">טוען…</p></div>
+    </section>
+    <section class="dlg-section">
+      <h3>איפוס</h3>
+      <div class="reset-row">
+        <span>איפוס הגדרות<small>הגדרות, קיצורים וערכה חוזרים לברירת המחדל. השכבות לא משתנות.</small></span>
+        <button class="btn small" id="btnResetSettings">איפוס הגדרות</button>
+      </div>
+      <div class="reset-row">
+        <span>איפוס מלא<small>מוחק את כל השכבות וההגדרות, כמו אחרי התקנה. אפשר להחזיר מיד אחרי.</small></span>
+        <button class="btn small danger" id="btnResetAll">איפוס מלא</button>
+      </div>
     </section>
     <section class="dlg-section">
       <h3>אודות</h3>
@@ -1080,7 +1115,7 @@ function renderEditor() {
     </div>
 
     <div class="editor-layout">
-      <div class="col-form">
+      <div class="col">
         <section class="card">
           <h3>תמונה</h3>
           <p class="desc">PNG עם רקע שקוף נראה הכי טוב. גם JPG, BMP, GIF ו-WebP עובדים.</p>
@@ -1148,6 +1183,18 @@ function renderEditor() {
           </div>
         </section>
 
+      </div>
+      <div class="col">
+        <section class="card preview">
+          <h3>על המסך</h3>
+          <div class="screen" id="screen" style="aspect-ratio:${mon.width}/${mon.height}"><div class="taskbar"></div></div>
+          <dl class="facts">
+            <dt>${stickerOf(l) ? "מדבקה" : "קובץ"}</dt><dd dir="auto">${l.image ? esc(stickerOf(l) || baseName(l.image)) : "—"}</dd>
+            <dt>מסך</dt><dd><span class="ltr">${mon.width}×${mon.height}</span></dd>
+          </dl>
+          ${inPos ? "" : `<button class="btn" id="btnPosition">${ICON.move}מיקום בגרירה על המסך</button>`}
+        </section>
+
         <section class="card">
           <h3>מראה</h3>
           <div class="rows">
@@ -1181,18 +1228,6 @@ function renderEditor() {
             <span>לחיצות עוברות דרך השכבה<small>אפשר ללחוץ על מה שמתחתיה כאילו היא לא שם. כבוי: השכבה חוסמת את המקום שהיא מכסה.</small></span></label>
         </section>
       </div>
-
-      <aside class="col-preview">
-        <section class="card preview">
-          <h3>על המסך</h3>
-          <div class="screen" id="screen" style="aspect-ratio:${mon.width}/${mon.height}"><div class="taskbar"></div></div>
-          <dl class="facts">
-            <dt>${stickerOf(l) ? "מדבקה" : "קובץ"}</dt><dd dir="auto">${l.image ? esc(stickerOf(l) || baseName(l.image)) : "—"}</dd>
-            <dt>מסך</dt><dd><span class="ltr">${mon.width}×${mon.height}</span></dd>
-          </dl>
-          ${inPos ? "" : `<button class="btn" id="btnPosition">${ICON.move}מיקום בגרירה על המסך</button>`}
-        </section>
-      </aside>
     </div>
   </div>`;
 
@@ -1396,16 +1431,49 @@ function select(i) {
   renderEditor();
 }
 
-function toast(text, warn) {
+// הודעה קופצת. `action` הוא פקודה שכפתור בתוך ההודעה שולח (למשל "להחזיר"),
+// כי את הטעות מתקנים במקום שבו רואים אותה.
+function toast(text, warn, action, actionLabel) {
   const el = document.createElement("div");
   el.className = "toast" + (warn ? " warn" : "");
   el.setAttribute("role", warn ? "alert" : "status");
-  el.innerHTML = `<span></span><button class="x" aria-label="סגירה">${ICON.x}</button>`;
+  el.innerHTML = `<span></span>${action ? `<button class="btn small primary act"></button>` : ""}<button class="x" aria-label="סגירה">${ICON.x}</button>`;
   el.firstChild.textContent = text;
+  if (action) {
+    const b = el.querySelector(".act");
+    b.textContent = actionLabel || "ביטול";
+    b.addEventListener("click", () => { send({ c: action }); el.remove(); });
+  }
   el.querySelector(".x").addEventListener("click", () => el.remove());
   $("toasts").appendChild(el);
-  // אזהרה נשארת זמן כפול: היא דורשת קריאה, לא רק מבט.
-  setTimeout(() => el.remove(), warn ? 7000 : 3200);
+  // אזהרה נשארת זמן כפול: היא דורשת קריאה, לא רק מבט. הודעה עם פעולה - עוד יותר.
+  setTimeout(() => el.remove(), action ? 15000 : warn ? 7000 : 3200);
+}
+
+// משך זמן בעברית קצרה: "פחות מדקה", "12 דק׳", "3 שע׳ 05 דק׳".
+function fmtDuration(sec) {
+  sec = Math.floor(sec || 0);
+  if (sec < 60) return "פחות מדקה";
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
+  return h ? `${h} שע׳ ${String(m).padStart(2, "0")} דק׳` : `${m} דק׳`;
+}
+
+function renderStats(m) {
+  const items = (m.items || []).map((it, i) => ({ ...it, i })).sort((a, b) => b.seconds - a.seconds);
+  const since = m.since && m.since.length === 10 ? `${m.since.slice(8, 10)}.${m.since.slice(5, 7)}.${m.since.slice(0, 4)}` : "";
+  const max = items.length ? items[0].seconds : 0;
+  let html;
+  if (!items.length) html = `<p class="note">אין עדיין שכבות.</p>`;
+  else if (max < 1) html = `<p class="note">עוד לא נצבר זמן שימוש. הזמן נספר לכל שכבה בזמן שהיא מוצגת על המסך.</p>`;
+  else {
+    html = `<p class="top">הכי בשימוש: <b>${esc(items[0].name)}</b>, ${fmtDuration(items[0].seconds)}</p>` +
+      items.map((it, k) => `<div class="row${k === 0 ? " best" : ""}"><span class="n">${esc(it.name)}</span>` +
+        `<span class="bar"><i style="width:${max ? Math.max(2, it.seconds / max * 100) : 0}%"></i></span>` +
+        `<span class="t">${fmtDuration(it.seconds)}</span></div>`).join("");
+  }
+  html += `<div class="foot">${since ? `נספר מאז ${since}` : ""}<button class="btn small ghost" id="btnResetStats">איפוס הסטטיסטיקה</button></div>`;
+  $("statsBody").innerHTML = html;
+  $("btnResetStats").addEventListener("click", () => send({ c: "resetStats" }));
 }
 
 function confirmDialog(title, text, yesLabel) {
@@ -1452,7 +1520,7 @@ function applySettings() {
   const hint = (key, busy, what) => busy
     ? `<span class="hotkey-busy"><kbd>${esc(key)}</kbd> תפוס על ידי תוכנה אחרת</span>`
     : `<kbd>${esc(key)}</kbd> ${what}`;
-  $("hotkeyHint").innerHTML = hint(s.hotkey, s.hotkeyBusy, "מסתיר ומציג הכל") +
+  $("hotkeyHint").innerHTML = hint(s.hotkey, s.hotkeyBusy, "הצגה והסתרה אוטומטית") +
     (s.cycleHotkey ? " · " + hint(s.cycleHotkey, s.cycleBusy, "השכבה הבאה") : "");
   // בזמן לכידה של צירוף חדש הכפתור אומר שהוא מחכה, ולא מציג את הישן.
   for (const [id, which, key] of [["hkToggle", "toggle", s.hotkey], ["hkCycle", "cycle", s.cycleHotkey]]) {
@@ -1568,7 +1636,20 @@ $("btnTheme").addEventListener("click", () => {
   send({ c: "settings", settings: state.settings });
   scheduleSave();
 });
-$("btnSettings").addEventListener("click", () => $("settingsDlg").showModal());
+$("btnSettings").addEventListener("click", () => { send({ c: "stats" }); $("settingsDlg").showModal(); });
+$("btnResetSettings").addEventListener("click", async () => {
+  if (await confirmDialog("לאפס את ההגדרות?",
+      "ההגדרות, קיצורי המקלדת והערכה יחזרו לברירת המחדל, וההפעלה עם Windows תכובה. השכבות לא ישתנו.",
+      "איפוס הגדרות")) send({ c: "resetSettings" });
+});
+$("btnResetAll").addEventListener("click", async () => {
+  if (await confirmDialog("לאפס את התוכנה?",
+      "כל השכבות וההגדרות יימחקו, כמו אחרי התקנה חדשה. מיד אחרי האיפוס אפשר יהיה להחזיר את מה שהיה.",
+      "איפוס מלא")) {
+    $("settingsDlg").close();
+    send({ c: "resetAll" });
+  }
+});
 $("btnCloseSettings").addEventListener("click", () => $("settingsDlg").close());
 $("btnExit").addEventListener("click", () => send({ c: "exit" }));
 $("btnCheckUpdate").addEventListener("click", () => send({ c: "checkUpdate" }));
@@ -1691,7 +1772,11 @@ function onMessage(m) {
       break;
 
     case "toast":
-      toast(m.text, m.warn);
+      toast(m.text, m.warn, m.action, m.actionLabel);
+      break;
+
+    case "stats":
+      renderStats(m);
       break;
 
     case "update":

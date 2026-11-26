@@ -95,6 +95,11 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
     settings.hotkeyVk       = (unsigned)GetInt(kGeneral, L"HotkeyVk", 'H', path);
     settings.cycleMods      = (unsigned)GetInt(kGeneral, L"CycleHotkeyMods", (int)settings.cycleMods, path);
     settings.cycleVk        = (unsigned)GetInt(kGeneral, L"CycleHotkeyVk", (int)settings.cycleVk, path);
+    {
+        const std::wstring since = GetStr(kGeneral, L"StatsSince", L"", path);
+        settings.statsSince.clear();
+        for (wchar_t ch : since) settings.statsSince += static_cast<char>(ch);  // an ASCII date
+    }
 
     const int count = GetInt(kGeneral, L"Count", 0, path);
     layers.clear();
@@ -126,6 +131,7 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
         l.grayscale    = GetInt(s, L"Grayscale", 0, path) != 0;
         l.removeBg     = GetInt(s, L"RemoveBg", 0, path) != 0;
         l.bgTolerance  = GetInt(s, L"BgTolerance", 25, path);
+        l.usageSeconds = GetDouble(s, L"UsageSeconds", 0.0, path);
         layers.push_back(std::move(l));
     }
     return true;
@@ -147,6 +153,7 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
     PutInt(text, L"HotkeyVk", settings.hotkeyVk);
     PutInt(text, L"CycleHotkeyMods", settings.cycleMods);
     PutInt(text, L"CycleHotkeyVk", settings.cycleVk);
+    PutStr(text, L"StatsSince", std::wstring(settings.statsSince.begin(), settings.statsSince.end()));
 
     for (size_t i = 0; i < layers.size(); ++i) {
         const Layer& l = layers[i];
@@ -174,6 +181,7 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
         PutInt(text, L"Grayscale", l.grayscale ? 1 : 0);
         PutInt(text, L"RemoveBg", l.removeBg ? 1 : 0);
         PutInt(text, L"BgTolerance", l.bgTolerance);
+        PutInt(text, L"UsageSeconds", (long long)l.usageSeconds);
     }
 
     const std::wstring path = ConfigPath();

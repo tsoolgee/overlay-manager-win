@@ -32,6 +32,32 @@ const UINT_PTR kUpdateTimer = 1;
 const UINT kFirstCheckMs = 20 * 1000;
 const UINT kCheckEveryMs = 6 * 60 * 60 * 1000;
 
+// Usage statistics: how long each layer has been on screen, counted every few
+// seconds and saved every few minutes (and on every save and on exit).
+const UINT_PTR kUsageTimer = 2;
+const UINT kUsageEveryMs = 15 * 1000;
+const int kUsageSaveEveryTicks = 20;   // 20 × 15 s = 5 minutes
+
+// The settings a first run starts with, and "Reset settings" returns to.
+Settings DefaultSettings() {
+    Settings s;  // the struct's own defaults: no autostart, tray icon on, dark, auto update
+    s.hotkeyMods = MOD_CONTROL | MOD_ALT;
+    s.hotkeyVk = 'H';
+    // N for "next". Ctrl+Alt is AltGr on a Hebrew keyboard, and AltGr+N types
+    // nothing there, so the combination takes no character away from anyone.
+    s.cycleMods = MOD_CONTROL | MOD_ALT;
+    s.cycleVk = 'N';
+    return s;
+}
+
+std::string TodayIso() {
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    char buf[16];
+    snprintf(buf, sizeof buf, "%04d-%02d-%02d", t.wYear, t.wMonth, t.wDay);
+    return buf;
+}
+
 // Tray menu command ids.
 enum {
     CMD_OPEN = 100,
@@ -206,13 +232,9 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     }
 
     RefreshMonitors();
-    settings_.hotkeyMods = MOD_CONTROL | MOD_ALT;
-    settings_.hotkeyVk = 'H';
-    // N for "next". Ctrl+Alt is AltGr on a Hebrew keyboard, and AltGr+N types
-    // nothing there, so the combination takes no character away from anyone.
-    settings_.cycleMods = MOD_CONTROL | MOD_ALT;
-    settings_.cycleVk = 'N';
-    LoadConfig(settings_, layers_);
+    settings_ = DefaultSettings();
+    if (!LoadConfig(settings_, layers_) || settings_.statsSince.empty())
+        settings_.statsSince = TodayIso();  // usage is counted from the first run
 
     // The registry is the source of truth for autostart: the user may have
     // removed the entry through Task Manager since the config was written.
@@ -285,6 +307,8 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     (void)afterUpdate;
     CleanupAfterUpdate();
     SetTimer(hidden_, kUpdateTimer, kFirstCheckMs, nullptr);
+    lastUsageTick_ = GetTickCount64();
+    SetTimer(hidden_, kUsageTimer, kUsageEveryMs, nullptr);
     return true;
 }
 
@@ -341,7 +365,20 @@ void App::SyncOverlay(int index) {
     overlays_[index]->Update(layers_[index]);
 }
 
+void App::AccountUsage() {
+    // Time since the last count goes to every layer that was on screen for it.
+    // Called before anything that changes what is shown, so a toggle does not
+    // credit (or lose) up to a tick's worth of the wrong state.
+    const unsigned long long now = GetTickCount64();
+    const double dt = (now - lastUsageTick_) / 1000.0;
+    lastUsageTick_ = now;
+    if (dt <= 0 || allHidden_) return;
+    for (auto& l : layers_)
+        if (l.enabled && !l.image.empty()) l.usageSeconds += dt;
+}
+
 void App::SetAllHidden(bool hidden) {
+    AccountUsage();
     allHidden_ = hidden;
     for (auto& o : overlays_) o->SetHiddenByHotkey(hidden);
     UpdateTrayIcon();
@@ -540,6 +577,7 @@ void App::OnUiMessage(const std::string& json) {
 
     if (cmd == "patch") {
         if (!valid) return;
+        AccountUsage();  // before a change that may hide or show the layer
         ApplyLayerJson(msg["layer"], layers_[i]);
         SyncOverlay(i);
         return;
@@ -632,6 +670,36 @@ void App::OnUiMessage(const std::string& json) {
     if (cmd == "setHotkey") {
         SetHotkey(msg["which"].asString() == "cycle", (unsigned)msg["mods"].asInt(0),
                   (unsigned)msg["vk"].asInt(0));
+        return;
+    }
+
+    if (cmd == "stats") {
+        SendStats();
+        return;
+    }
+
+    if (cmd == "resetStats") {
+        AccountUsage();
+        for (auto& l : layers_) l.usageSeconds = 0;
+        settings_.statsSince = TodayIso();
+        SaveConfig(settings_, layers_);
+        SendStats();
+        return;
+    }
+
+    if (cmd == "resetSettings") {
+        ResetSettings();
+        Toast("ההגדרות חזרו לברירת המחדל. השכבות לא השתנו", false);
+        return;
+    }
+
+    if (cmd == "resetAll") {
+        ResetAll();
+        return;
+    }
+
+    if (cmd == "undoReset") {
+        UndoReset();
         return;
     }
 
@@ -783,7 +851,20 @@ void App::SetLayerImage(int index, const std::wstring& image) {
 
     // Fit the box to the new image's aspect ratio, keeping the current width.
     int iw = 0, ih = 0;
-    if (ImagePixelSize(l.image, iw, ih) && iw > 0) {
+    const int stickerWidth = StickerDefaultWidth(image);
+    if (stickerWidth && ImagePixelSize(l.image, iw, ih) && iw > 0) {
+        // A built-in sticker comes at its own size, in proportion; on a layer
+        // that had no picture yet it also takes its usual place, the
+        // bottom-left corner just above the taskbar.
+        l.width = stickerWidth;
+        l.height = std::max(16, (int)std::lround((double)stickerWidth * ih / iw));
+        if (!hadPicture) {
+            l.anchorH = ANCHOR_LEFT;
+            l.anchorV = ANCHOR_BOTTOM;
+            l.offsetX = 0.0;
+            l.offsetY = 5.0;
+        }
+    } else if (ImagePixelSize(l.image, iw, ih) && iw > 0) {
         if (l.lockAspect)
             l.height = std::max(16, (int)std::lround((double)l.width * ih / iw));
         // A layer that never had a picture starts life at the image's own size,
@@ -951,7 +1032,98 @@ void App::SetHotkey(bool cycle, unsigned mods, unsigned vk) {
     toast(vk ? "הקיצור עודכן ל-" + HotkeyLabel(mods, vk) : std::string("הקיצור לשכבה הבאה כובה"), false);
 }
 
+void App::Toast(const std::string& text, bool warn, const char* action, const char* actionLabel) {
+    js::Object t;
+    t["t"] = "toast";
+    t["text"] = text;
+    t["warn"] = warn;
+    if (action) {
+        // A button in the toast that sends this command back (e.g. undo).
+        t["action"] = action;
+        t["actionLabel"] = actionLabel ? actionLabel : "";
+    }
+    Send(js::Value(std::move(t)).dump());
+}
+
+void App::SendStats() {
+    AccountUsage();
+    js::Object m;
+    m["t"] = "stats";
+    m["since"] = settings_.statsSince;
+    js::Array items;
+    for (const auto& l : layers_) {
+        js::Object o;
+        o["name"] = ToUtf8(l.name);
+        o["image"] = ToUtf8(l.image);
+        o["seconds"] = (double)(long long)l.usageSeconds;
+        items.push_back(js::Value(std::move(o)));
+    }
+    m["items"] = js::Value(std::move(items));
+    Send(js::Value(std::move(m)).dump());
+}
+
+void App::ResetSettings() {
+    // Back to what a first run starts with. The layers are left as they are;
+    // autostart is a registry entry, so it is removed there too.
+    if (IsAutoStartEnabled()) SetAutoStartEnabled(false);
+    const std::string since = settings_.statsSince;
+    settings_ = DefaultSettings();
+    settings_.statsSince = since;
+    RegisterHotkey();
+    if (!trayAdded_) CreateTrayIcon();
+    if (manager_) manager_->SetTheme(settings_.lightTheme);
+    SaveConfig(settings_, layers_);
+    SendSettings();
+}
+
+void App::ResetAll() {
+    // Everything goes, as on a fresh install - but a copy of the configuration
+    // is kept first, and the toast offers to bring it back.
+    const std::wstring backup = ConfigDir() + L"\\config-before-reset.ini";
+    AccountUsage();
+    SaveConfig(settings_, layers_);
+    CopyFileW(ConfigPath().c_str(), backup.c_str(), FALSE);
+
+    if (positionIndex_ >= 0) SetPositionMode(positionIndex_, false);
+    layers_.clear();
+    selected_ = -1;
+    allHidden_ = false;
+    ResetSettings();
+    settings_.statsSince = TodayIso();
+    SaveConfig(settings_, layers_);
+    RebuildOverlays();
+    UpdateTrayIcon();
+    SendInit();
+    Toast("התוכנה אופסה: כל השכבות וההגדרות נמחקו", true, "undoReset", "להחזיר את מה שהיה");
+}
+
+void App::UndoReset() {
+    const std::wstring backup = ConfigDir() + L"\\config-before-reset.ini";
+    if (GetFileAttributesW(backup.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    if (!CopyFileW(backup.c_str(), ConfigPath().c_str(), FALSE)) {
+        Toast("לא ניתן היה לשחזר את ההגדרות הקודמות", true);
+        return;
+    }
+    DeleteFileW(backup.c_str());
+    settings_ = DefaultSettings();
+    layers_.clear();
+    LoadConfig(settings_, layers_);
+    if (settings_.statsSince.empty()) settings_.statsSince = TodayIso();
+    // The saved file remembers whether autostart was on; the registry entry
+    // itself was removed by the reset, so put it back to match.
+    if (settings_.autoStart) SetAutoStartEnabled(true);
+    settings_.autoStart = IsAutoStartEnabled();
+    RegisterHotkey();
+    if (settings_.showTrayIcon) CreateTrayIcon(); else RemoveTrayIcon();
+    if (manager_) manager_->SetTheme(settings_.lightTheme);
+    selected_ = layers_.empty() ? -1 : 0;
+    RebuildOverlays();
+    SendInit();
+    Toast("השכבות וההגדרות חזרו", false);
+}
+
 void App::ShowNextLayer() {
+    AccountUsage();
     // Only layers with a picture take part; a layer without one would show
     // nothing, which looks like the key did not work.
     std::vector<int> pics;
@@ -1098,6 +1270,7 @@ void App::ShowManager() {
 void App::RequestQuit() {
     quitting_ = true;
     // Persist before leaving, so a session's tweaks are not silently lost.
+    AccountUsage();
     SaveConfig(settings_, layers_);
     RemoveTrayIcon();
     overlays_.clear();
@@ -1140,6 +1313,14 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 SetTimer(hidden_, kUpdateTimer, kCheckEveryMs, nullptr);
                 // Always look; install only when automatic updates are on.
                 StartUpdateCheck(false, settings_.autoUpdate);
+                return 0;
+            }
+            if (wp == kUsageTimer) {
+                AccountUsage();
+                if (++usageTicks_ >= kUsageSaveEveryTicks) {
+                    usageTicks_ = 0;
+                    SaveConfig(settings_, layers_);
+                }
                 return 0;
             }
             break;
