@@ -735,11 +735,11 @@ void App::OnUiMessage(const std::string& json) {
             l.width = bar.cx;
             l.height = bar.cy;
             l.rotation = 0;
-            if (!hadPicture) {  // its usual place: the top-left corner
+            if (!hadPicture) {  // its usual place: close to the top-left corner
                 l.anchorH = ANCHOR_LEFT;
                 l.anchorV = ANCHOR_TOP;
-                l.offsetX = 5.0;
-                l.offsetY = 5.0;
+                l.offsetX = 1.0;
+                l.offsetY = 1.0;
                 if (l.name.rfind(L"שכבה", 0) == 0) l.name = L"טיימר עמדה";
             }
         }

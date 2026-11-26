@@ -1134,6 +1134,73 @@ function renderEditor() {
 
   const timer = isTimer(l);
   const t = l.timer || { start: 0, remaining: 0, used: 0, running: true, locked: false };
+  // גודל ומיקום: בעמודה הימנית לתמונה, ובשמאלית לטיימר, שאין לו גודל לקבוע.
+  const posCard = `
+        <section class="card">
+          <h3>גודל ומיקום</h3>
+          <p class="desc">המיקום נשמר באחוזים מהמסך, ולכן הוא נשאר נכון גם כשמשנים רזולוציה.</p>
+          <div class="rows">
+            <div class="field not-timer">
+              <span class="label">גודל</span>
+              <div class="size-grid">
+                <label class="captioned"><span>רוחב</span><span class="num"><input type="number" id="fWidth" value="${l.width}" min="16" max="20000" step="1"><span class="u">px</span></span></label>
+                <button class="lock" id="fLock" aria-pressed="${l.lockAspect}" title="${l.lockAspect ? "היחס בין רוחב לגובה נשמר — לחצו כדי לשחרר" : "רוחב וגובה משתנים בנפרד — לחצו כדי לשמור יחס"}" aria-label="שמירת יחס רוחב-גובה">${l.lockAspect ? ICON.link : ICON.unlink}</button>
+                <label class="captioned"><span>גובה</span><span class="num"><input type="number" id="fHeight" value="${l.height}" min="16" max="20000" step="1"><span class="u">px</span></span></label>
+              </div>
+            </div>
+            <div class="field">
+              <label class="label" for="fMonitor">מסך</label>
+              <select id="fMonitor">${monitorOptions}</select>
+            </div>
+            <div class="field">
+              <span class="label">עיגון</span>
+              <div class="anchor-block">
+                <div class="anchor-pad" id="anchorPad" role="group" aria-label="לאיזו פינה השכבה נצמדת">
+                  ${[0, 1, 2].map((v) => [0, 1, 2].map((h) =>
+                    `<button type="button" data-h="${h}" data-v="${v}" aria-pressed="${l.anchorH === h && l.anchorV === v}"
+                       title="${esc(anchorLabel(h, v))}" aria-label="${esc(anchorLabel(h, v))}"><span class="dot"></span></button>`).join("")).join("")}
+                </div>
+                <div class="anchor-side">
+                  <span class="anchor-name">נצמדת אל <b>${esc(anchorLabel(l.anchorH, l.anchorV))}</b></span>
+                  <div class="pair">
+                    <label class="captioned"><span>${OFFSET_H[l.anchorH]}</span><span class="num"><input type="number" id="fOffX" value="${(+l.offsetX).toFixed(1)}" step="0.5" min="-100" max="100"><span class="u">%</span></span></label>
+                    <label class="captioned"><span>${OFFSET_V[l.anchorV]}</span><span class="num"><input type="number" id="fOffY" value="${(+l.offsetY).toFixed(1)}" step="0.5" min="-100" max="100"><span class="u">%</span></span></label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+`;
+  // מראה: אצל הטיימר עובר לעמודה הימנית, כדי ששתי העמודות ייגמרו בערך באותו גובה.
+  const lookCard = `
+        <section class="card">
+          <h3>מראה</h3>
+          <div class="rows">
+            <div class="field">
+              <label class="label" for="fOpacity">אטימות</label>
+              <div class="range no-reset"><input type="range" id="fOpacity" min="0" max="255" step="1" value="${l.opacity}"><output id="outOpacity">${pct(l.opacity)}%</output></div>
+            </div>
+            <div class="field not-timer">
+              <label class="label" for="fRot">סיבוב</label>
+              <div class="range"><input type="range" id="fRot" min="-180" max="180" step="1" value="${l.rotation}"><output id="outRot">${(+l.rotation).toFixed(0)}°</output>
+                <button class="btn small" id="btnRot0" ${l.rotation ? "" : "disabled"} title="מחזיר את השכבה לישר">ישר</button></div>
+            </div>
+            <div class="field not-timer">
+              <span class="label">צבע</span>
+              <div class="swatch-row">
+                <label class="check"><input type="checkbox" id="fTint" ${l.useTint ? "checked" : ""}><span class="box">${ICON.check}</span><span>צביעה בגוון</span></label>
+                <button class="swatch" id="btnColor" style="background:${hex(l)}" title="בחירת גוון" aria-label="בחירת גוון"></button>
+                <span class="hexcode">${hex(l).toUpperCase()}</span>
+              </div>
+            </div>
+            <div class="field not-timer">
+              <span class="label"></span>
+              <label class="check"><input type="checkbox" id="fGray" ${l.grayscale ? "checked" : ""}><span class="box">${ICON.check}</span><span>שחור-לבן</span></label>
+            </div>
+          </div>
+        </section>
+`;
   host.innerHTML = `
   <div class="editor-inner${timer ? " is-timer" : ""}">
     ${state.positionIndex >= 0 ? `
@@ -1151,6 +1218,40 @@ function renderEditor() {
 
     <div class="editor-layout">
       <div class="col">
+        <section class="card">
+          <h3>תמונה</h3>
+          <p class="desc">PNG עם רקע שקוף נראה הכי טוב. גם JPG, BMP, GIF ו-WebP עובדים.</p>
+          <div class="rows">
+            <div class="file-row">
+              ${timer ? `<div class="file-path placeholder"><span>טיימר עמדה מובנה</span></div>`
+                : stickerOf(l) ? `<div class="file-path placeholder"><span>מדבקה מובנית: <b class="ltr">${esc(stickerOf(l))}</b></span></div>`
+                : `<div class="file-path${l.image ? "" : " placeholder"}" title="${esc(l.image)}">${l.image ? esc(l.image) : "לא נבחרה תמונה"}</div>`}
+              <button class="btn ${l.image ? "" : "primary"}" id="btnBrowse">${l.image && !stickerOf(l) && !timer ? "החלפה…" : "בחירת קובץ…"}</button>
+            </div>
+            ${state.stickers.length ? `
+            <div class="stickers" role="group" aria-label="מדבקות מובנות">
+              <span class="note">או מדבקה מוכנה:</span>
+              ${state.stickers.map((s) => {
+                const p = previewFor({ image: "sticker:" + s });
+                return `<button class="sticker" data-sticker="${esc(s)}" aria-pressed="${stickerOf(l) === s}">
+                  ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.image}</span>`}<span class="ltr">${esc(s)}</span></button>`;
+              }).join("")}
+              <button class="sticker" data-widget="timer" aria-pressed="${timer}" title="טיימר שסופר את זמן העמדה">
+                ${previewFor({ image: TIMER }) ? `<img src="${previewFor({ image: TIMER })}" alt="" style="width:auto;max-width:72px">` : `<span class="thumb">${ICON.image}</span>`}<span>טיימר עמדה</span></button>
+            </div>` : ""}
+            ${l.missing ? `<p class="note warn">${ICON.alert}${l.unreadable ? "לא ניתן לקרוא את הקובץ: הפורמט לא נתמך, או שהקובץ פגום." : "הקובץ לא נמצא בנתיב הזה. אולי הוא הוזז או נמחק — בחרו אותו מחדש."}</p>` : ""}
+            <label class="check not-timer" title="לתמונה שנשמרה עם ריבוע לבן או צבעוני מסביב">
+              <input type="checkbox" id="fRemoveBg" ${l.removeBg ? "checked" : ""}><span class="box">${ICON.check}</span>
+              <span>הסרת רקע אחיד<small>הופך לשקוף את צבע הרקע שמסביב לתמונה. אותו צבע בתוך הלוגו נשמר.</small></span>
+            </label>
+            ${l.removeBg && !timer ? `
+            <div class="field">
+              <label class="label" for="fBgTol">רגישות</label>
+              <div class="range no-reset"><input type="range" id="fBgTol" min="1" max="100" step="1" value="${l.bgTolerance}"><output id="outBgTol">${l.bgTolerance}</output></div>
+            </div>` : ""}
+          </div>
+        </section>
+
         ${timer ? `
         <section class="card">
           <h3>טיימר עמדה</h3>
@@ -1187,75 +1288,9 @@ function renderEditor() {
               <span>נעילת מיקום<small>הטיימר לא זז כשגוררים אותו.</small></span></label>
           </div>
         </section>` : ""}
-        <section class="card">
-          <h3>תמונה</h3>
-          <p class="desc">PNG עם רקע שקוף נראה הכי טוב. גם JPG, BMP, GIF ו-WebP עובדים.</p>
-          <div class="rows">
-            <div class="file-row">
-              ${timer ? `<div class="file-path placeholder"><span>טיימר עמדה מובנה</span></div>`
-                : stickerOf(l) ? `<div class="file-path placeholder"><span>מדבקה מובנית: <b class="ltr">${esc(stickerOf(l))}</b></span></div>`
-                : `<div class="file-path${l.image ? "" : " placeholder"}" title="${esc(l.image)}">${l.image ? esc(l.image) : "לא נבחרה תמונה"}</div>`}
-              <button class="btn ${l.image ? "" : "primary"}" id="btnBrowse">${l.image && !stickerOf(l) && !timer ? "החלפה…" : "בחירת קובץ…"}</button>
-            </div>
-            ${state.stickers.length ? `
-            <div class="stickers" role="group" aria-label="מדבקות מובנות">
-              <span class="note">או מדבקה מוכנה:</span>
-              ${state.stickers.map((s) => {
-                const p = previewFor({ image: "sticker:" + s });
-                return `<button class="sticker" data-sticker="${esc(s)}" aria-pressed="${stickerOf(l) === s}">
-                  ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.image}</span>`}<span class="ltr">${esc(s)}</span></button>`;
-              }).join("")}
-              <button class="sticker" data-widget="timer" aria-pressed="${timer}" title="טיימר שסופר את זמן העמדה">
-                ${previewFor({ image: TIMER }) ? `<img src="${previewFor({ image: TIMER })}" alt="" style="width:auto;max-width:72px">` : `<span class="thumb">${ICON.image}</span>`}<span>טיימר עמדה</span></button>
-            </div>` : ""}
-            ${l.missing ? `<p class="note warn">${ICON.alert}${l.unreadable ? "לא ניתן לקרוא את הקובץ: הפורמט לא נתמך, או שהקובץ פגום." : "הקובץ לא נמצא בנתיב הזה. אולי הוא הוזז או נמחק — בחרו אותו מחדש."}</p>` : ""}
-            <label class="check not-timer" title="לתמונה שנשמרה עם ריבוע לבן או צבעוני מסביב">
-              <input type="checkbox" id="fRemoveBg" ${l.removeBg ? "checked" : ""}><span class="box">${ICON.check}</span>
-              <span>הסרת רקע אחיד<small>הופך לשקוף את צבע הרקע שמסביב לתמונה. אותו צבע בתוך הלוגו נשמר.</small></span>
-            </label>
-            ${l.removeBg && !timer ? `
-            <div class="field">
-              <label class="label" for="fBgTol">רגישות</label>
-              <div class="range no-reset"><input type="range" id="fBgTol" min="1" max="100" step="1" value="${l.bgTolerance}"><output id="outBgTol">${l.bgTolerance}</output></div>
-            </div>` : ""}
-          </div>
-        </section>
+        ${timer ? lookCard : ""}
 
-        <section class="card">
-          <h3>גודל ומיקום</h3>
-          <p class="desc">המיקום נשמר באחוזים מהמסך, ולכן הוא נשאר נכון גם כשמשנים רזולוציה.</p>
-          <div class="rows">
-            <div class="field not-timer">
-              <span class="label">גודל</span>
-              <div class="size-grid">
-                <label class="captioned"><span>רוחב</span><span class="num"><input type="number" id="fWidth" value="${l.width}" min="16" max="20000" step="1"><span class="u">px</span></span></label>
-                <button class="lock" id="fLock" aria-pressed="${l.lockAspect}" title="${l.lockAspect ? "היחס בין רוחב לגובה נשמר — לחצו כדי לשחרר" : "רוחב וגובה משתנים בנפרד — לחצו כדי לשמור יחס"}" aria-label="שמירת יחס רוחב-גובה">${l.lockAspect ? ICON.link : ICON.unlink}</button>
-                <label class="captioned"><span>גובה</span><span class="num"><input type="number" id="fHeight" value="${l.height}" min="16" max="20000" step="1"><span class="u">px</span></span></label>
-              </div>
-            </div>
-            <div class="field">
-              <label class="label" for="fMonitor">מסך</label>
-              <select id="fMonitor">${monitorOptions}</select>
-            </div>
-            <div class="field">
-              <span class="label">עיגון</span>
-              <div class="anchor-block">
-                <div class="anchor-pad" id="anchorPad" role="group" aria-label="לאיזו פינה השכבה נצמדת">
-                  ${[0, 1, 2].map((v) => [0, 1, 2].map((h) =>
-                    `<button type="button" data-h="${h}" data-v="${v}" aria-pressed="${l.anchorH === h && l.anchorV === v}"
-                       title="${esc(anchorLabel(h, v))}" aria-label="${esc(anchorLabel(h, v))}"><span class="dot"></span></button>`).join("")).join("")}
-                </div>
-                <div class="anchor-side">
-                  <span class="anchor-name">נצמדת אל <b>${esc(anchorLabel(l.anchorH, l.anchorV))}</b></span>
-                  <div class="pair">
-                    <label class="captioned"><span>${OFFSET_H[l.anchorH]}</span><span class="num"><input type="number" id="fOffX" value="${(+l.offsetX).toFixed(1)}" step="0.5" min="-100" max="100"><span class="u">%</span></span></label>
-                    <label class="captioned"><span>${OFFSET_V[l.anchorV]}</span><span class="num"><input type="number" id="fOffY" value="${(+l.offsetY).toFixed(1)}" step="0.5" min="-100" max="100"><span class="u">%</span></span></label>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
+        ${timer ? "" : posCard}
 
       </div>
       <div class="col">
@@ -1269,32 +1304,9 @@ function renderEditor() {
           ${timer ? `<p class="note">את הטיימר גוררים ישירות על המסך.</p>` : inPos ? "" : `<button class="btn" id="btnPosition">${ICON.move}מיקום בגרירה על המסך</button>`}
         </section>
 
-        <section class="card">
-          <h3>מראה</h3>
-          <div class="rows">
-            <div class="field">
-              <label class="label" for="fOpacity">אטימות</label>
-              <div class="range no-reset"><input type="range" id="fOpacity" min="0" max="255" step="1" value="${l.opacity}"><output id="outOpacity">${pct(l.opacity)}%</output></div>
-            </div>
-            <div class="field not-timer">
-              <label class="label" for="fRot">סיבוב</label>
-              <div class="range"><input type="range" id="fRot" min="-180" max="180" step="1" value="${l.rotation}"><output id="outRot">${(+l.rotation).toFixed(0)}°</output>
-                <button class="btn small" id="btnRot0" ${l.rotation ? "" : "disabled"} title="מחזיר את השכבה לישר">ישר</button></div>
-            </div>
-            <div class="field not-timer">
-              <span class="label">צבע</span>
-              <div class="swatch-row">
-                <label class="check"><input type="checkbox" id="fTint" ${l.useTint ? "checked" : ""}><span class="box">${ICON.check}</span><span>צביעה בגוון</span></label>
-                <button class="swatch" id="btnColor" style="background:${hex(l)}" title="בחירת גוון" aria-label="בחירת גוון"></button>
-                <span class="hexcode">${hex(l).toUpperCase()}</span>
-              </div>
-            </div>
-            <div class="field not-timer">
-              <span class="label"></span>
-              <label class="check"><input type="checkbox" id="fGray" ${l.grayscale ? "checked" : ""}><span class="box">${ICON.check}</span><span>שחור-לבן</span></label>
-            </div>
-          </div>
-        </section>
+        ${timer ? posCard : ""}
+
+        ${timer ? "" : lookCard}
 
         <section class="card not-timer">
           <h3>התנהגות</h3>
@@ -1849,6 +1861,14 @@ function onMessage(m) {
         const b = document.querySelector(`[data-sticker="${CSS.escape(m.key.slice(8))}"]`);
         const old = b && b.querySelector(".thumb");
         if (old) { const img = document.createElement("img"); img.src = m.uri; img.alt = ""; old.replaceWith(img); }
+      }
+      if (m.key === TIMER && m.uri) {
+        const old = document.querySelector('[data-widget="timer"] .thumb');
+        if (old) {
+          const img = document.createElement("img");
+          img.src = m.uri; img.alt = ""; img.style.cssText = "width:auto;max-width:72px";
+          old.replaceWith(img);
+        }
       }
       break;
 
