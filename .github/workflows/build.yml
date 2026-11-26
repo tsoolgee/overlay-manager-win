@@ -38,18 +38,18 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build/Release/OverlayManager.exe dist/
+          Copy-Item build/Release/Floaty.exe dist/
           Copy-Item README.md, LICENSE dist/
           # A single self-contained file: the static WebView2 loader and the
           # static CRT mean there is nothing else to ship.
-          $exe = Get-Item dist/OverlayManager.exe
-          "OverlayManager.exe — {0:N0} bytes" -f $exe.Length
-          (Get-FileHash dist/OverlayManager.exe -Algorithm SHA256).Hash |
-            Out-File dist/OverlayManager.exe.sha256 -Encoding ascii
+          $exe = Get-Item dist/Floaty.exe
+          "Floaty.exe — {0:N0} bytes" -f $exe.Length
+          (Get-FileHash dist/Floaty.exe -Algorithm SHA256).Hash |
+            Out-File dist/Floaty.exe.sha256 -Encoding ascii
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OverlayManager-win-x64
+          name: Floaty-win-x64
           path: dist/
 
       # Releases are published by hand with `gh release create`, not from here:

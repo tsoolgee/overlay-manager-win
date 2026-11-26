@@ -67,8 +67,15 @@ std::wstring ConfigDir() {
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata)))
         return L".";
     std::wstring dir = appdata;
-    dir += L"\\OverlayManager";
-    CreateDirectoryW(dir.c_str(), nullptr);
+    dir += L"\\Floaty";
+    // CreateDirectory succeeds only the first time, i.e. on Floaty's first run.
+    // Floaty grew out of Overlay Manager and reads the same config.ini, so a
+    // user switching over keeps their layers: copy it across once. The
+    // original's folder is left as it is, for Overlay Manager itself.
+    if (CreateDirectoryW(dir.c_str(), nullptr)) {
+        const std::wstring legacy = std::wstring(appdata) + L"\\OverlayManager\\config.ini";
+        CopyFileW(legacy.c_str(), (dir + L"\\config.ini").c_str(), TRUE);
+    }
     return dir;
 }
 

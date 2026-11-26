@@ -13,9 +13,9 @@
 
 namespace {
 
-const wchar_t* kHiddenClass = L"OverlayMgrAppWnd";
-const wchar_t* kMutexName = L"OverlayManager_SingleInstanceMutex";
-const wchar_t* kAppName = L"Overlay Manager";
+const wchar_t* kHiddenClass = L"FloatyAppWnd";
+const wchar_t* kMutexName = L"Floaty_SingleInstanceMutex";
+const wchar_t* kAppName = L"Floaty";
 
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_UPDATE_DONE = WM_APP + 2;   // lParam: UpdateResult*, owned by the receiver
@@ -642,6 +642,16 @@ void App::OnUiMessage(const std::string& json) {
     if (cmd == "openReleases") {
         ShellExecuteW(nullptr, L"open", ToWide(ReleasesPageUrl()).c_str(), nullptr, nullptr,
                       SW_SHOWNORMAL);
+        return;
+    }
+
+    if (cmd == "openLink") {
+        // A fixed list, not a URL from the page: the page can only name one.
+        const std::string which = msg["which"].asString();
+        const wchar_t* url = which == "home"     ? L"https://github.com/BeniaBot/floaty"
+                           : which == "original" ? L"https://github.com/tsoolgee/overlay-manager-win"
+                           : nullptr;
+        if (url) ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
         return;
     }
 

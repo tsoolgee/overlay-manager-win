@@ -19,14 +19,14 @@
 namespace {
 
 // The repository whose releases this build updates from.
-const char* kRepo = "tsoolgee/overlay-manager-win";
-const char* kExeAsset = "OverlayManager.exe";
-const char* kHashAsset = "OverlayManager.exe.sha256";
+const char* kRepo = "BeniaBot/floaty";
+const char* kExeAsset = "Floaty.exe";
+const char* kHashAsset = "Floaty.exe.sha256";
 
 // Set only by tests: a stand-in for GitHub's "latest release" endpoint.
 std::wstring TestApiUrl() {
     wchar_t buf[1024] = {0};
-    const DWORD n = GetEnvironmentVariableW(L"OVERLAY_UPDATE_API", buf, (DWORD)std::size(buf));
+    const DWORD n = GetEnvironmentVariableW(L"FLOATY_UPDATE_API", buf, (DWORD)std::size(buf));
     return (n > 0 && n < std::size(buf)) ? std::wstring(buf, n) : std::wstring();
 }
 
@@ -50,7 +50,7 @@ struct Handle {
 };
 
 HINTERNET OpenSession() {
-    const std::wstring agent = L"OverlayManager/" + ToWide(AppVersion());
+    const std::wstring agent = L"Floaty/" + ToWide(AppVersion());
     // Automatic proxy (Windows 8.1+) follows the system's proxy settings;
     // older systems reject the flag, so fall back to the registry default.
     HINTERNET s = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -232,7 +232,7 @@ bool WriteAll(const std::wstring& path, const std::string& data) {
 
 }  // namespace
 
-const char* AppVersion() { return OVERLAY_MANAGER_VERSION; }
+const char* AppVersion() { return FLOATY_VERSION; }
 
 std::string ReleasesPageUrl() { return std::string("https://github.com/") + kRepo + "/releases/latest"; }
 

@@ -54,8 +54,9 @@ struct Settings {
     unsigned hotkeyVk = 0;
 };
 
-// Loads/saves %APPDATA%\OverlayManager\config.ini in the same layout the
-// original build wrote, so an existing configuration keeps working.
+// Loads/saves %APPDATA%\Floaty\config.ini in the same layout Overlay Manager
+// writes (and imports Overlay Manager's on the first run), so an existing
+// configuration keeps working.
 bool LoadConfig(Settings& settings, std::vector<Layer>& layers);
 bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers);
 

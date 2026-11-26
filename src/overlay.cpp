@@ -18,7 +18,7 @@ using namespace Gdiplus;
 
 namespace {
 
-const wchar_t* kOverlayClass = L"OverlayMgrOverlayWnd";
+const wchar_t* kOverlayClass = L"FloatyOverlayWnd";
 const int kGripSize = 18;  // resize corner, in pixels
 const int kMinSide = 16;
 const double kPi = 3.14159265358979323846;

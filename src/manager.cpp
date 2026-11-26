@@ -17,8 +17,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-const wchar_t* kManagerClass = L"OverlayMgrManagerWnd";
-const wchar_t* kTitle = L"Overlay Manager - ניהול חותמות צפות";
+const wchar_t* kManagerClass = L"FloatyManagerWnd";
+const wchar_t* kTitle = L"Floaty";
 
 // The page ships inside the executable as an RCDATA resource, so there is a
 // single file to distribute and nothing to go missing next to it.
@@ -119,7 +119,7 @@ bool ManagerWindow::Create(bool lightTheme) {
     if (!WebView2Available()) {
         const int answer = MessageBoxW(
             nullptr,
-            L"הממשק של Overlay Manager מבוסס על רכיב WebView2 של מיקרוסופט, "
+            L"הממשק של Floaty מבוסס על רכיב WebView2 של מיקרוסופט, "
             L"והוא לא מותקן במחשב הזה.\n\n"
             L"רוב מחשבי Windows 11 וגרסאות עדכניות של Windows 10 כוללים אותו כברירת מחדל.\n\n"
             L"לפתוח את דף ההורדה של מיקרוסופט?",

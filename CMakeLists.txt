@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(OverlayManager VERSION 3.2.0 LANGUAGES CXX)
+project(Floaty VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,7 +11,7 @@ endif()
 # Static CRT, so the executable runs on a clean machine with no redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-add_executable(OverlayManager WIN32
+add_executable(Floaty WIN32
   src/main.cpp
   src/app.cpp
   src/config.cpp
@@ -26,16 +26,16 @@ add_executable(OverlayManager WIN32
 # One version number, from project() above: the updater compares it against
 # the latest release tag, and the .rc stamps it into the file properties.
 configure_file(res/version.h.in "${CMAKE_BINARY_DIR}/generated/version.h" @ONLY)
-target_include_directories(OverlayManager PRIVATE "${CMAKE_BINARY_DIR}/generated")
+target_include_directories(Floaty PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
-target_compile_definitions(OverlayManager PRIVATE
+target_compile_definitions(Floaty PRIVATE
   UNICODE _UNICODE
   NOMINMAX                 # so std::min / std::max are usable
   WIN32_LEAN_AND_MEAN
   _CRT_SECURE_NO_WARNINGS
 )
 
-target_compile_options(OverlayManager PRIVATE
+target_compile_options(Floaty PRIVATE
   /W4
   /utf-8                   # the sources contain Hebrew string literals
   /permissive-
@@ -43,7 +43,7 @@ target_compile_options(OverlayManager PRIVATE
   $<$<CONFIG:Release>:/GL>
 )
 
-target_link_options(OverlayManager PRIVATE
+target_link_options(Floaty PRIVATE
   # res/app.rc embeds the manifest itself; without this the linker adds a second
   # one and the resource compiler rejects the duplicate.
   /MANIFEST:NO
@@ -77,15 +77,15 @@ else()
   set(_wv2_arch x86)
 endif()
 
-target_include_directories(OverlayManager PRIVATE
+target_include_directories(Floaty PRIVATE
   "${WEBVIEW2_DIR}/build/native/include"
   src
 )
 
 # The static loader keeps this a single file: no WebView2Loader.dll to ship.
-target_link_libraries(OverlayManager PRIVATE
+target_link_libraries(Floaty PRIVATE
   "${WEBVIEW2_DIR}/build/native/${_wv2_arch}/WebView2LoaderStatic.lib"
   gdiplus windowscodecs winhttp bcrypt comctl32 comdlg32 shell32 advapi32 user32 gdi32 ole32 shlwapi version dwmapi
 )
 
-set_target_properties(OverlayManager PROPERTIES OUTPUT_NAME "OverlayManager")
+set_target_properties(Floaty PROPERTIES OUTPUT_NAME "Floaty")
