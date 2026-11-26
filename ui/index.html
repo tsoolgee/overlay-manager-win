@@ -471,6 +471,15 @@ select {
 /* המוכנים מראש: אריחים שווים ברשת, כך שאף אחד לא נשבר לבד לשורה חדשה */
 .stickers { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; }
 .stickers > .note { grid-column: 1 / -1; }
+/* עם "מדבקות נוספות" יש ארבעה אריחים: שניים על שניים, או ארבעה בשורה כשיש רוחב */
+.stickers.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@container (min-width: 600px) { .stickers.four { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+#stickersDlg { width: min(640px, calc(100vw - 48px)); }
+.sticker-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
+.sticker-gallery .sticker { flex-direction: column; justify-content: center; height: auto; padding: 12px 8px 10px; gap: 8px; }
+.sticker-gallery .sticker img, .sticker-gallery .sticker .thumb { width: 72px; height: 72px; }
+.sticker-gallery .sticker .thumb svg { width: 30px; height: 30px; }
+.sticker-gallery .sticker > span:last-child { max-width: 100%; }
 .sticker {
   display: flex; align-items: center; gap: 8px; min-width: 0;
   height: 46px; padding: 0 12px 0 6px;
@@ -898,6 +907,12 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
   </div>
 </dialog>
 
+<dialog id="stickersDlg">
+  <div class="dlg-head"><h2>מדבקות נוספות</h2></div>
+  <div class="dlg-body"><div class="sticker-gallery" id="stickerGallery" role="group" aria-label="מדבקות נוספות"></div></div>
+  <div class="dlg-foot"><span class="spacer"></span><button class="btn" id="stickersClose">סגור</button></div>
+</dialog>
+
 <dialog id="notesDlg">
   <div class="dlg-head"><h2 id="notesTitle"></h2></div>
   <div class="dlg-body"><p class="notes" id="notesText"></p></div>
@@ -928,7 +943,8 @@ const state = {
   monitors: [],
   settings: { autoStart: false, minimizeToTray: true, showTrayIcon: true, lightTheme: false,
               autoUpdate: true, hotkey: "Ctrl+Alt+H", hotkeyBusy: false, cycleHotkey: "", cycleBusy: false },
-  stickers: [],       // שמות המדבקות המובנות
+  stickers: [],       // שמות המדבקות המובנות שמוצגות כאריחים
+  moreStickers: [],   // ושל אלה שמאחורי "מדבקות נוספות"
   capture: null,      // "toggle" / "cycle" בזמן שמחכים לצירוף מקשים חדש
   update: { busy: false, ready: "" },
   selected: -1,
@@ -949,6 +965,7 @@ const ICON = {
   moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8z"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></svg>',
   timer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 2M10 2.5h4M12 2.5V6M18.5 6.5l1.5-1.5"/></svg>',
+  grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>',
   move: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9V5h4M15 5h4v4M19 15v4h-4M9 19H5v-4"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>',
   unlink: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-3.2-7.7"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 3.2 7.7"/><path d="M4 4l16 16" opacity=".8"/></svg>',
@@ -1239,7 +1256,7 @@ function renderEditor() {
               <button class="btn ${l.image ? "" : "primary"}" id="btnBrowse">${l.image && !stickerOf(l) && !timer ? "החלפה…" : "בחירת קובץ…"}</button>
             </div>
             ${state.stickers.length ? `
-            <div class="stickers" role="group" aria-label="מדבקות מובנות">
+            <div class="stickers${state.moreStickers.length ? " four" : ""}" role="group" aria-label="מדבקות מובנות">
               <span class="note">או מוכן מראש:</span>
               ${state.stickers.map((s) => {
                 const p = previewFor({ image: "sticker:" + s });
@@ -1248,6 +1265,13 @@ function renderEditor() {
               }).join("")}
               <button class="sticker" data-widget="timer" aria-pressed="${timer}" title="טיימר שסופר את זמן העמדה">
                 <span class="thumb">${ICON.timer}</span><span>טיימר עמדה</span></button>
+              ${state.moreStickers.length ? (() => {
+                // כשהשכבה כבר משתמשת באחת מהן, האריח מראה אותה ואת שמה.
+                const cur = state.moreStickers.includes(stickerOf(l)) ? stickerOf(l) : "";
+                const p = cur && previewFor({ image: "sticker:" + cur });
+                return `<button class="sticker" id="btnMoreStickers" data-current="${esc(cur)}" aria-pressed="${!!cur}" title="עוד מדבקות מוכנות" aria-haspopup="dialog">
+                  ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.grid}</span>`}<span${cur ? ' class="ltr"' : ""}>${cur ? esc(cur) : "מדבקות נוספות"}</span></button>`;
+              })() : ""}
             </div>` : ""}
             ${l.missing ? `<p class="note warn">${ICON.alert}${l.unreadable ? "לא ניתן לקרוא את הקובץ: הפורמט לא נתמך, או שהקובץ פגום." : "הקובץ לא נמצא בנתיב הזה. אולי הוא הוזז או נמחק — בחרו אותו מחדש."}</p>` : ""}
             <label class="check not-timer" title="לתמונה שנשמרה עם ריבוע לבן או צבעוני מסביב">
@@ -1459,6 +1483,7 @@ function wireEditor(l) {
   $("fClick").addEventListener("change", (e) => patch(idx, { clickThrough: e.target.checked }));
 
   $("btnBrowse").addEventListener("click", () => { send({ c: "browse", i: idx }); scheduleSave(); });
+  if ($("btnMoreStickers")) $("btnMoreStickers").addEventListener("click", () => openMoreStickers(idx));
   document.querySelectorAll("[data-widget]").forEach((b) => b.addEventListener("click", () => {
     send({ c: "widget", i: idx, name: b.dataset.widget });
   }));
@@ -1489,6 +1514,25 @@ function wireEditor(l) {
   if ($("btnPosition")) $("btnPosition").addEventListener("click", () => send({ c: "position", i: idx, on: true }));
   if ($("btnPosDone")) $("btnPosDone").addEventListener("click", finishPosition);
   if ($("btnPosCancel")) $("btnPosCancel").addEventListener("click", cancelPosition);
+}
+
+// "מדבקות נוספות": חלונית עם כל המדבקות שאין להן אריח משלהן. בחירה שמה אותה
+// על השכבה וסוגרת. התמונות הממוזערות נטענות רק כשהחלונית נפתחת בפעם הראשונה.
+function openMoreStickers(idx) {
+  const l = state.layers[idx];
+  const cur = stickerOf(l);
+  $("stickerGallery").innerHTML = state.moreStickers.map((s) => {
+    const p = previewFor({ image: "sticker:" + s });
+    return `<button class="sticker" data-more="${esc(s)}" aria-pressed="${cur === s}">
+      ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.image}</span>`}<span class="ltr">${esc(s)}</span></button>`;
+  }).join("");
+  state.moreStickers.forEach((s) => ensurePreview({ image: "sticker:" + s }));
+  document.querySelectorAll("[data-more]").forEach((b) => b.addEventListener("click", () => {
+    send({ c: "sticker", i: idx, name: b.dataset.more });
+    scheduleSave();
+    $("stickersDlg").close();
+  }));
+  $("stickersDlg").showModal();
 }
 
 // סיום מצב המיקום: שמירה של מה שנגרר, או חזרה למיקום ולגודל שהיו לפניו.
@@ -1772,6 +1816,7 @@ $("btnCloseSettings").addEventListener("click", () => $("settingsDlg").close());
 $("btnExit").addEventListener("click", () => send({ c: "exit" }));
 $("btnCheckUpdate").addEventListener("click", () => send({ c: "checkUpdate" }));
 // קישורים נפתחים בדפדפן דרך המארח, שמכיר רק רשימה קבועה; הדף עצמו לא מנווט.
+$("stickersClose").addEventListener("click", () => $("stickersDlg").close());
 document.querySelectorAll("[data-link]").forEach((a) => a.addEventListener("click", (e) => {
   e.preventDefault();
   send({ c: "openLink", which: a.dataset.link });
@@ -1841,6 +1886,7 @@ function onMessage(m) {
       state.selected = m.selected != null ? m.selected : (state.layers.length ? state.layers.length - 1 : -1);
       state.version = m.version || "";
       state.stickers = m.stickers || [];
+      state.moreStickers = m.moreStickers || [];
       // התמונות הממוזערות של המדבקות, פעם אחת, לפני שהעורך נבנה.
       state.stickers.forEach((s) => ensurePreview({ image: "sticker:" + s }));
       ensurePreview({ image: TIMER });
@@ -1868,9 +1914,10 @@ function onMessage(m) {
       renderMini();
       // תמונות המדבקות יושבות בכפתורים של העורך: מחליפים רק אותן, בלי לבנות מחדש.
       if ((m.key || "").startsWith("sticker:") && m.uri) {
-        const b = document.querySelector(`[data-sticker="${CSS.escape(m.key.slice(8))}"]`);
-        const old = b && b.querySelector(".thumb");
-        if (old) { const img = document.createElement("img"); img.src = m.uri; img.alt = ""; old.replaceWith(img); }
+        const name = CSS.escape(m.key.slice(8));
+        document.querySelectorAll(`[data-sticker="${name}"] .thumb, [data-more="${name}"] .thumb, [data-current="${name}"] .thumb`).forEach((old) => {
+          const img = document.createElement("img"); img.src = m.uri; img.alt = ""; old.replaceWith(img);
+        });
       }
       break;
 

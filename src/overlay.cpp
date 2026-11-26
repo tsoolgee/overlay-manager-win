@@ -218,18 +218,24 @@ static std::unique_ptr<Bitmap> InMemoryCopy(Bitmap& src);
 
 namespace {
 // width: the size a layer gets when the sticker is picked (height follows the
-// picture's proportions).
-struct StickerDef { const wchar_t* name; int id; int width; };
+// picture's proportions). more: offered under "more stickers", in a picker of
+// its own, rather than as a tile of its own next to the file button.
+struct StickerDef { const wchar_t* name; int id; int width; bool more; };
 const StickerDef kStickers[] = {
-    {L"out-net", IDR_STICKER_OUTNET, 170},
-    {L"wifree", IDR_STICKER_WIFREE, 200},
+    {L"out-net", IDR_STICKER_OUTNET, 170, false},
+    {L"wifree", IDR_STICKER_WIFREE, 200, false},
+    {L"netiv", IDR_STICKER_NETIV, 200, true},
+    {L"videoff-logo", IDR_STICKER_VIDEOFF_LOGO, 220, true},
+    {L"videoff", IDR_STICKER_VIDEOFF, 360, true},
 };
 const wchar_t kStickerPrefix[] = L"sticker:";
 }  // namespace
 
-std::vector<std::wstring> StickerNames() {
+std::vector<std::wstring> StickerNames(StickerGroup group) {
     std::vector<std::wstring> out;
-    for (const auto& s : kStickers) out.push_back(s.name);
+    for (const auto& s : kStickers)
+        if (group == StickerGroup::All || s.more == (group == StickerGroup::More))
+            out.push_back(s.name);
     return out;
 }
 

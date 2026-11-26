@@ -539,9 +539,11 @@ void App::SendInit() {
     m["t"] = "init";
     m["settings"] = SettingsJson();
 
-    js::Array stickers;
-    for (const auto& name : StickerNames()) stickers.push_back(js::Value(ToUtf8(name)));
+    js::Array stickers, more;
+    for (const auto& name : StickerNames(StickerGroup::Main)) stickers.push_back(js::Value(ToUtf8(name)));
+    for (const auto& name : StickerNames(StickerGroup::More)) more.push_back(js::Value(ToUtf8(name)));
     m["stickers"] = js::Value(std::move(stickers));
+    m["moreStickers"] = js::Value(std::move(more));
 
     js::Array mons;
     for (const auto& mon : Monitors()) {

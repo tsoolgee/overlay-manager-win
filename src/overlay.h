@@ -142,7 +142,8 @@ bool ImagePixelSize(const std::wstring& path, int& outW, int& outH);
 // Pictures built into the program, offered next to choosing a file. A layer
 // that uses one stores "sticker:<name>" as its image, so it keeps working when
 // no copy of the picture exists on the disk.
-std::vector<std::wstring> StickerNames();
+enum class StickerGroup { All, Main, More };
+std::vector<std::wstring> StickerNames(StickerGroup group = StickerGroup::All);
 bool IsStickerPath(const std::wstring& image);
 std::wstring StickerPath(const std::wstring& name);
 // The width a layer gets when this sticker is picked; 0 if it is not a sticker.
