@@ -148,3 +148,5 @@ bool IsStickerPath(const std::wstring& image);
 std::wstring StickerPath(const std::wstring& name);
 // The width a layer gets when this sticker is picked; 0 if it is not a sticker.
 int StickerDefaultWidth(const std::wstring& image);
+// Its usual place (anchored bottom-left), in percent; false if not a sticker.
+bool StickerDefaultPlace(const std::wstring& image, double& offX, double& offY);
