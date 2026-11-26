@@ -50,6 +50,7 @@ public:
     void Update(const Layer& layer);
 
     void SetIndex(int index) { index_ = index; }
+    HWND Hwnd() const { return hwnd_; }
     void SetHiddenByHotkey(bool hidden);
     void SetPositionMode(bool on);
     bool PositionMode() const { return positionMode_; }

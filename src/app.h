@@ -30,6 +30,7 @@ private:
 
     // --- overlays ---
     void RebuildOverlays();
+    void RestackOverlays();
     void SyncOverlay(int index);
     void SetAllHidden(bool hidden);
     void SetPositionMode(int index, bool on);
