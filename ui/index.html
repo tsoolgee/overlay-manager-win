@@ -123,6 +123,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .btn.danger-fill:hover { filter: brightness(1.08); border-color: var(--danger-fill); }
 
 .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+.btn.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
+.btn.ghost:hover { background: var(--hover); border-color: var(--line-strong); color: var(--ink); }
 
 .btn.icon { width: 34px; padding: 0; }
 .btn.small { height: 28px; padding: 0 10px; font-size: 12.5px; }
@@ -725,6 +727,11 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
       הגדרות
     </button>
+    <!-- סגירת החלון משאירה את השכבות על המסך; זו הדרך לצאת מהתוכנה עצמה -->
+    <button class="btn ghost" id="btnExit" title="סוגר את התוכנה ומסיר את השכבות מהמסך">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 3v9"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></svg>
+      יציאה
+    </button>
   </header>
 
   <div class="update-bar" id="updateBar" role="status">
@@ -790,13 +797,12 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
     </section>
     <section class="dlg-section">
       <h3>אודות</h3>
-      <p class="about">מבוסס על <a href="#" data-link="original">Overlay Manager</a> של tsoolgee · MIT · <a href="#" data-link="home">גיטהאב</a></p>
+      <!-- כל מילה באנגלית בתוך bdi: אחרת "tsoolgee · MIT" נקרא כרצף LTR אחד והסדר מתהפך -->
+      <p class="about">מבוסס על <a href="#" data-link="original"><bdi>Overlay Manager</bdi></a> של <bdi>tsoolgee</bdi> · <bdi>MIT</bdi> · <a href="#" data-link="home">גיטהאב</a></p>
     </section>
   </div>
   <div class="dlg-foot">
     <button class="btn primary" id="btnCloseSettings">סגור</button>
-    <span class="spacer"></span>
-    <button class="btn danger" id="btnExit" title="סוגר את התוכנה ומסיר את השכבות מהמסך">יציאה מהתוכנה</button>
   </div>
 </dialog>
 
