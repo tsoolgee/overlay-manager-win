@@ -218,24 +218,44 @@ static std::unique_ptr<Bitmap> InMemoryCopy(Bitmap& src);
 
 namespace {
 // width: the size a layer gets when the sticker is picked (height follows the
-// picture's proportions).
-struct StickerDef { const wchar_t* name; int id; int width; };
+// picture's proportions). more: offered under "more stickers", in a picker of
+// its own, rather than as a tile of its own next to the file button.
+// offX/offY: its usual place, from the bottom-left corner, in percent.
+struct StickerDef { const wchar_t* name; int id; int width; bool more; double offX, offY; };
 const StickerDef kStickers[] = {
-    {L"out-net", IDR_STICKER_OUTNET, 170},
-    {L"wifree", IDR_STICKER_WIFREE, 200},
+    {L"out-net", IDR_STICKER_OUTNET, 170, false, 0.0, 5.0},
+    {L"wifree", IDR_STICKER_WIFREE, 200, false, 0.0, 5.0},
+    {L"netiv", IDR_STICKER_NETIV, 200, true, 1.0, 6.5},
+    {L"videoff-logo", IDR_STICKER_VIDEOFF_LOGO, 220, true, 0.0, 5.0},
+    {L"videoff", IDR_STICKER_VIDEOFF, 270, true, 0.0, 5.0},
+    {L"הסינון הסופי", IDR_STICKER_HASINUN, 200, true, 0.0, 5.0},
 };
 const wchar_t kStickerPrefix[] = L"sticker:";
 }  // namespace
 
-std::vector<std::wstring> StickerNames() {
+std::vector<std::wstring> StickerNames(StickerGroup group) {
     std::vector<std::wstring> out;
-    for (const auto& s : kStickers) out.push_back(s.name);
+    for (const auto& s : kStickers)
+        if (group == StickerGroup::All || s.more == (group == StickerGroup::More))
+            out.push_back(s.name);
     return out;
 }
 
 bool IsStickerPath(const std::wstring& image) { return image.rfind(kStickerPrefix, 0) == 0; }
 
 std::wstring StickerPath(const std::wstring& name) { return kStickerPrefix + name; }
+
+bool StickerDefaultPlace(const std::wstring& image, double& offX, double& offY) {
+    if (!IsStickerPath(image)) return false;
+    const std::wstring name = image.substr(wcslen(kStickerPrefix));
+    for (const auto& s : kStickers)
+        if (name == s.name) {
+            offX = s.offX;
+            offY = s.offY;
+            return true;
+        }
+    return false;
+}
 
 int StickerDefaultWidth(const std::wstring& image) {
     if (!IsStickerPath(image)) return 0;
@@ -697,6 +717,10 @@ void OverlayWindow::Render() {
             attrs.SetColorMatrix(&cm, ColorMatrixFlagsDefault, ColorAdjustTypeBitmap);
 
             GraphicsState saved = g.Save();
+            // Pixel centres, not corners: otherwise a scaled picture is drawn
+            // half a pixel off and comes out a little soft. Only for the
+            // picture: the timer's and the frame's 1px lines stay on the grid.
+            g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
             if (std::fabs(layer_.rotation) >= 0.01) {
                 g.TranslateTransform(w / 2.0f, h / 2.0f);
                 g.RotateTransform((REAL)layer_.rotation);

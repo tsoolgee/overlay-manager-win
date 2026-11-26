@@ -4,6 +4,7 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <thread>
 
 #include "json.h"
@@ -539,9 +540,11 @@ void App::SendInit() {
     m["t"] = "init";
     m["settings"] = SettingsJson();
 
-    js::Array stickers;
-    for (const auto& name : StickerNames()) stickers.push_back(js::Value(ToUtf8(name)));
+    js::Array stickers, more;
+    for (const auto& name : StickerNames(StickerGroup::Main)) stickers.push_back(js::Value(ToUtf8(name)));
+    for (const auto& name : StickerNames(StickerGroup::More)) more.push_back(js::Value(ToUtf8(name)));
     m["stickers"] = js::Value(std::move(stickers));
+    m["moreStickers"] = js::Value(std::move(more));
 
     js::Array mons;
     for (const auto& mon : Monitors()) {
@@ -910,6 +913,7 @@ void App::OnUiMessage(const std::string& json) {
         const std::string which = msg["which"].asString();
         const wchar_t* url = which == "home"     ? L"https://github.com/tsoolgee/overlay-manager-win"
                            : which == "original" ? L"https://github.com/tsoolgee/overlay-manager-win"
+                           : which == "tsoolgee" ? L"https://github.com/tsoolgee"
                            : nullptr;
         if (url) ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
         return;
@@ -959,6 +963,12 @@ void App::BrowseImage(int index) {
 void App::SetLayerImage(int index, const std::wstring& image) {
     Layer& l = layers_[index];
     const bool hadPicture = !l.image.empty();
+    // Still where the previous sticker goes by default (not moved since)?
+    // Then the new one may take its own usual place too.
+    double prevX = 0, prevY = 0;
+    const bool atStickerPlace = StickerDefaultPlace(l.image, prevX, prevY) &&
+                                l.anchorH == ANCHOR_LEFT && l.anchorV == ANCHOR_BOTTOM &&
+                                std::fabs(l.offsetX - prevX) < 0.05 && std::fabs(l.offsetY - prevY) < 0.05;
     l.image = image;
 
     // Fit the box to the new image's aspect ratio, keeping the current width.
@@ -970,11 +980,12 @@ void App::SetLayerImage(int index, const std::wstring& image) {
         // bottom-left corner just above the taskbar.
         l.width = stickerWidth;
         l.height = std::max(16, (int)std::lround((double)stickerWidth * ih / iw));
-        if (!hadPicture) {
+        double offX = 0, offY = 0;
+        if ((!hadPicture || atStickerPlace) && StickerDefaultPlace(image, offX, offY)) {
             l.anchorH = ANCHOR_LEFT;
             l.anchorV = ANCHOR_BOTTOM;
-            l.offsetX = 0.0;
-            l.offsetY = 5.0;
+            l.offsetX = offX;
+            l.offsetY = offY;
         }
     } else if (ImagePixelSize(l.image, iw, ih) && iw > 0) {
         if (l.lockAspect)
