@@ -25,7 +25,12 @@ if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Micr
     throw "$Cab is not a valid Microsoft-signed package ($($sig.Status))"
 }
 
-$work = Join-Path ([IO.Path]::GetTempPath()) ("floaty-offline-" + [guid]::NewGuid().ToString('N'))
+# Work next to the output, not in %TEMP%: about 1 GB passes through, and
+# makecab reads its directive file as ANSI, so a path with Hebrew in it (a
+# user profile, say) would not survive. The output folder must be plain ASCII.
+$outDir = Split-Path ([IO.Path]::GetFullPath($Out))
+if ($outDir -match '[^ -~]') { throw "Put -Out in a folder whose path is plain ASCII: $outDir" }
+$work = Join-Path $outDir ("floaty-offline-work-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $work | Out-Null
 try {
     $tree = Join-Path $work 'tree'
