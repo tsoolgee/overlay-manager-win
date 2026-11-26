@@ -448,7 +448,21 @@ select {
   min-width: 0;
   user-select: text;
 }
-.file-path.empty { color: var(--muted); direction: rtl; text-align: right; }
+.file-path.placeholder { color: var(--muted); direction: rtl; text-align: right; }
+.file-path.placeholder b { color: var(--ink); font-weight: 700; }
+.stickers { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sticker {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 46px; padding: 0 12px 0 6px;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  font-weight: 600; font-size: 13px;
+  transition: background .12s, border-color .12s;
+}
+.sticker:hover { background: var(--hover); border-color: var(--accent); }
+.sticker[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+.sticker img, .sticker .thumb { width: 34px; height: 34px; object-fit: contain; border-radius: 6px; }
 .note { font-size: 12.5px; color: var(--muted); }
 .note.warn { color: var(--danger); font-weight: 600; display: flex; gap: 6px; align-items: center; }
 .note.warn svg { width: 15px; height: 15px; }
@@ -692,6 +706,13 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
 .dlg-section:first-child { border-top: 0; padding-top: 0; }
 .dlg-section h3 { font-size: 13px; font-weight: 700; color: var(--ink-2); }
 .version-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+/* עמודות קבועות, כדי שהצירופים והכפתורים יעמדו זה מתחת לזה בשתי השורות */
+.hk-row { display: grid; grid-template-columns: minmax(0, 1fr) 104px auto 64px; align-items: center; gap: 8px; }
+.hk-what { font-size: 13.5px; }
+.hk-what small { display: block; color: var(--muted); font-size: 12px; }
+.hk-row kbd { font-size: 12px; padding: 5px 8px; text-align: center; }
+.hk-row kbd.off { color: var(--muted); font-weight: 400; }
+.hk-row kbd.wait { border-color: var(--accent); color: var(--accent-ink); }
 .version-row .spacer { flex: 1; }
 .about { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
 .about a { color: var(--accent-ink); }
@@ -783,8 +804,20 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
       <label class="check"><input type="checkbox" id="setTray"><span class="box"></span><span>סגירת החלון משאירה את השכבות על המסך<small>אחרת, סגירת החלון יוצאת מהתוכנה.</small></span></label>
     </section>
     <section class="dlg-section">
-      <h3>קיצור מקלדת</h3>
-      <p class="note"><kbd id="hotkeyHint2"></kbd> מסתיר ומציג את כל השכבות מכל מקום במחשב, למשל לפני צילום מסך.</p>
+      <h3>קיצורי מקלדת</h3>
+      <div class="hk-row">
+        <span class="hk-what">הסתרה והצגה של הכול<small>מכל מקום במחשב, למשל לפני צילום מסך</small></span>
+        <kbd id="hkToggle"></kbd>
+        <button class="btn small" data-hk="toggle">שינוי</button>
+        <span></span>
+      </div>
+      <div class="hk-row">
+        <span class="hk-what">השכבה הבאה<small>כל לחיצה מציגה את השכבה הבאה ומסתירה את האחרות</small></span>
+        <kbd id="hkCycle"></kbd>
+        <button class="btn small" data-hk="cycle">שינוי</button>
+        <button class="btn small ghost" id="hkCycleOff">כיבוי</button>
+      </div>
+      <p class="note warn" id="hkCapture" hidden></p>
     </section>
     <section class="dlg-section">
       <h3>עדכונים</h3>
@@ -794,6 +827,7 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
         <span class="spacer"></span>
         <button class="btn small" id="btnCheckUpdate">בדוק עכשיו</button>
       </div>
+      <p class="note" id="updateDetails" role="status"></p>
     </section>
     <section class="dlg-section">
       <h3>אודות</h3>
@@ -835,7 +869,9 @@ const state = {
   layers: [],
   monitors: [],
   settings: { autoStart: false, minimizeToTray: true, showTrayIcon: true, lightTheme: false,
-              autoUpdate: true, hotkey: "Ctrl+Alt+H", hotkeyBusy: false },
+              autoUpdate: true, hotkey: "Ctrl+Alt+H", hotkeyBusy: false, cycleHotkey: "", cycleBusy: false },
+  stickers: [],       // שמות המדבקות המובנות
+  capture: null,      // "toggle" / "cycle" בזמן שמחכים לצירוף מקשים חדש
   update: { busy: false, ready: "" },
   selected: -1,
   previews: {},       // מפתח תצוגה -> data URI
@@ -870,6 +906,9 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+// שכבה שמשתמשת במדבקה מובנית שומרת "sticker:<שם>" במקום נתיב.
+const stickerOf = (l) => (l && l.image && l.image.startsWith("sticker:")) ? l.image.slice(8) : "";
+
 function baseName(path) {
   if (!path) return "";
   const i = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
@@ -1047,9 +1086,19 @@ function renderEditor() {
           <p class="desc">PNG עם רקע שקוף נראה הכי טוב. גם JPG, BMP, GIF ו-WebP עובדים.</p>
           <div class="rows">
             <div class="file-row">
-              <div class="file-path${l.image ? "" : " empty"}" title="${esc(l.image)}">${l.image ? esc(l.image) : "לא נבחרה תמונה"}</div>
-              <button class="btn ${l.image ? "" : "primary"}" id="btnBrowse">${l.image ? "החלפה…" : "בחירת תמונה…"}</button>
+              ${stickerOf(l) ? `<div class="file-path placeholder"><span>מדבקה מובנית: <b class="ltr">${esc(stickerOf(l))}</b></span></div>`
+                : `<div class="file-path${l.image ? "" : " placeholder"}" title="${esc(l.image)}">${l.image ? esc(l.image) : "לא נבחרה תמונה"}</div>`}
+              <button class="btn ${l.image ? "" : "primary"}" id="btnBrowse">${l.image && !stickerOf(l) ? "החלפה…" : "בחירת קובץ…"}</button>
             </div>
+            ${state.stickers.length ? `
+            <div class="stickers" role="group" aria-label="מדבקות מובנות">
+              <span class="note">או מדבקה מוכנה:</span>
+              ${state.stickers.map((s) => {
+                const p = previewFor({ image: "sticker:" + s });
+                return `<button class="sticker" data-sticker="${esc(s)}" aria-pressed="${stickerOf(l) === s}">
+                  ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.image}</span>`}<span class="ltr">${esc(s)}</span></button>`;
+              }).join("")}
+            </div>` : ""}
             ${l.missing ? `<p class="note warn">${ICON.alert}${l.unreadable ? "לא ניתן לקרוא את הקובץ: הפורמט לא נתמך, או שהקובץ פגום." : "הקובץ לא נמצא בנתיב הזה. אולי הוא הוזז או נמחק — בחרו אותו מחדש."}</p>` : ""}
             <label class="check" title="לתמונה שנשמרה עם ריבוע לבן או צבעוני מסביב">
               <input type="checkbox" id="fRemoveBg" ${l.removeBg ? "checked" : ""}><span class="box">${ICON.check}</span>
@@ -1138,7 +1187,7 @@ function renderEditor() {
           <h3>על המסך</h3>
           <div class="screen" id="screen" style="aspect-ratio:${mon.width}/${mon.height}"><div class="taskbar"></div></div>
           <dl class="facts">
-            <dt>קובץ</dt><dd dir="auto">${l.image ? esc(baseName(l.image)) : "—"}</dd>
+            <dt>${stickerOf(l) ? "מדבקה" : "קובץ"}</dt><dd dir="auto">${l.image ? esc(stickerOf(l) || baseName(l.image)) : "—"}</dd>
             <dt>מסך</dt><dd><span class="ltr">${mon.width}×${mon.height}</span></dd>
           </dl>
           ${inPos ? "" : `<button class="btn" id="btnPosition">${ICON.move}מיקום בגרירה על המסך</button>`}
@@ -1279,6 +1328,10 @@ function wireEditor(l) {
   $("fClick").addEventListener("change", (e) => patch(idx, { clickThrough: e.target.checked }));
 
   $("btnBrowse").addEventListener("click", () => { send({ c: "browse", i: idx }); scheduleSave(); });
+  document.querySelectorAll("[data-sticker]").forEach((b) => b.addEventListener("click", () => {
+    send({ c: "sticker", i: idx, name: b.dataset.sticker });
+    scheduleSave();
+  }));
   $("btnColor").addEventListener("click", () => { send({ c: "color", i: idx }); scheduleSave(); });
   if ($("btnPosition")) $("btnPosition").addEventListener("click", () => send({ c: "position", i: idx, on: true }));
   if ($("btnPosDone")) $("btnPosDone").addEventListener("click", finishPosition);
@@ -1396,10 +1449,18 @@ function applySettings() {
   // בלי סמל במגש, סגירת החלון חייבת לצאת — אחרת אין דרך לחזור אליו.
   $("setTray").disabled = !s.showTrayIcon;
   $("setTray").closest(".check").style.opacity = s.showTrayIcon ? "" : ".5";
-  $("hotkeyHint").innerHTML = s.hotkeyBusy
-    ? `<span class="hotkey-busy"><kbd>${esc(s.hotkey)}</kbd> תפוס על ידי תוכנה אחרת</span>`
-    : `<kbd>${esc(s.hotkey)}</kbd> מסתיר ומציג הכל, מכל מקום`;
-  $("hotkeyHint2").textContent = s.hotkey;
+  const hint = (key, busy, what) => busy
+    ? `<span class="hotkey-busy"><kbd>${esc(key)}</kbd> תפוס על ידי תוכנה אחרת</span>`
+    : `<kbd>${esc(key)}</kbd> ${what}`;
+  $("hotkeyHint").innerHTML = hint(s.hotkey, s.hotkeyBusy, "מסתיר ומציג הכל") +
+    (s.cycleHotkey ? " · " + hint(s.cycleHotkey, s.cycleBusy, "השכבה הבאה") : "");
+  // בזמן לכידה של צירוף חדש הכפתור אומר שהוא מחכה, ולא מציג את הישן.
+  for (const [id, which, key] of [["hkToggle", "toggle", s.hotkey], ["hkCycle", "cycle", s.cycleHotkey]]) {
+    const k = $(id);
+    k.className = state.capture === which ? "wait" : key ? "" : "off";
+    k.textContent = state.capture === which ? "מחכה…" : key || "כבוי";
+  }
+  $("hkCycleOff").disabled = !s.cycleHotkey;
   document.querySelectorAll("#settingsDlg .check .box").forEach((b) => { b.innerHTML = ICON.check; });
   applyTheme();
 }
@@ -1419,6 +1480,7 @@ function pushSettings() {
 // ההודעה שהעדכון הצליח, שנשארת עד שסוגרים אותה ולא נעלמת אחרי שתי שניות.
 function applyUpdate() {
   const u = state.update;
+  renderUpdateDetails();
   $("btnCheckUpdate").disabled = u.busy || !!u.ready;
   $("btnCheckUpdate").textContent = u.busy ? "בודק…" : u.ready ? "מוכן להפעלה מחדש" : "בדוק עכשיו";
 
@@ -1461,6 +1523,24 @@ function applyUpdate() {
   if ($("updInstall") && u.busy) $("updInstall").disabled = true;
 }
 
+// שורת הפרטים בהגדרות: מתי נבדק, מה העדכנית בגיטהאב ומתי פורסמה, או למה הבדיקה נכשלה.
+function renderUpdateDetails() {
+  const u = state.update, v = (s) => `<span class="ltr">${esc(s)}</span>`;
+  const date = (d) => d && d.length === 10 ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : "";
+  let html;
+  if (u.busy) html = "בודק מול גיטהאב…";
+  else if (!u.checkedAt) html = "עוד לא נבדק מאז שהתוכנה נפתחה. הבדיקה האוטומטית רצה 20 שניות אחרי הפתיחה, ואחר כך כל 6 שעות.";
+  else {
+    const at = new Date(u.checkedAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+    const pub = date(u.published);
+    if (!u.checkOk) html = `הבדיקה ב-${v(at)} נכשלה: ${esc(u.checkError)}.`;
+    else if (u.available || u.ready)
+      html = `נבדק ב-${v(at)}: בגיטהאב יש גרסה ${v(u.latest)}${pub ? `, שפורסמה ב-${v(pub)}` : ""}. הגרסה שלך: ${v(u.current)}.`;
+    else html = `נבדק ב-${v(at)}: יש לך את הגרסה העדכנית ביותר, ${v(u.current)}${pub ? `, שפורסמה ב-${v(pub)}` : ""}.`;
+  }
+  $("updateDetails").innerHTML = html;
+}
+
 function showNotes(version, notes) {
   $("notesTitle").innerHTML = `מה חדש בגרסה <span class="ltr">${esc(version)}</span>`;
   $("notesText").textContent = notes || "";
@@ -1499,7 +1579,42 @@ document.querySelectorAll("[data-link]").forEach((a) => a.addEventListener("clic
 }));
 ["setAutoStart", "setTray", "setTrayIcon", "setAutoUpdate"].forEach((id) => $(id).addEventListener("change", pushSettings));
 
+// לכידת צירוף מקשים חדש לקיצור: לוחצים "שינוי", ואז את הצירוף עצמו.
+// הקוד שנשלח הוא קוד המקש הווירטואלי של Windows (keyCode), כמו ש-RegisterHotKey מקבל.
+function startCapture(which) {
+  state.capture = which;
+  $("hkCapture").hidden = false;
+  $("hkCapture").className = "note";
+  $("hkCapture").textContent = "הקישו את הצירוף החדש: Ctrl או Alt (אפשר גם Shift) ועוד מקש. Esc מבטל.";
+  applySettings();
+}
+function endCapture(message) {
+  state.capture = null;
+  $("hkCapture").hidden = !message;
+  $("hkCapture").className = "note warn";
+  $("hkCapture").textContent = message || "";
+  applySettings();
+}
+document.querySelectorAll("[data-hk]").forEach((b) => b.addEventListener("click", () => startCapture(b.dataset.hk)));
+$("hkCycleOff").addEventListener("click", () => send({ c: "setHotkey", which: "cycle", mods: 0, vk: 0 }));
+// Esc בזמן לכידה מבטל את הלכידה, לא סוגר את חלון ההגדרות.
+$("settingsDlg").addEventListener("cancel", (e) => { if (state.capture) e.preventDefault(); });
+$("settingsDlg").addEventListener("close", () => { if (state.capture) endCapture(); });
+
 document.addEventListener("keydown", (e) => {
+  if (state.capture) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (["Control", "Alt", "Shift", "Meta", "AltGraph"].includes(e.key)) return;  // עדיין מרכיבים
+    if (e.key === "Escape") { endCapture(); return; }
+    const vk = e.keyCode;
+    const fKey = vk >= 112 && vk <= 135;
+    if (!e.ctrlKey && !e.altKey && !fKey) { endCapture("צריך לכלול Ctrl או Alt, כדי שהקיצור לא יחליף אות רגילה בהקלדה."); return; }
+    const mods = (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.shiftKey ? 4 : 0);
+    send({ c: "setHotkey", which: state.capture, mods, vk });
+    endCapture();
+    return;
+  }
   if (e.ctrlKey && (e.key === "s" || e.key === "S")) { e.preventDefault(); saveNow(); return; }
   if (document.querySelector("dialog[open]")) return;
   // במצב מיקום: Esc מבטל ו-Enter שומר, גם כשהמיקוד בשדה (Enter בשדה נשאר שלו).
@@ -1526,6 +1641,9 @@ function onMessage(m) {
       state.layers = m.layers || [];
       state.selected = m.selected != null ? m.selected : (state.layers.length ? state.layers.length - 1 : -1);
       state.version = m.version || "";
+      state.stickers = m.stickers || [];
+      // התמונות הממוזערות של המדבקות, פעם אחת, לפני שהעורך נבנה.
+      state.stickers.forEach((s) => ensurePreview({ image: "sticker:" + s }));
       $("appVersion").textContent = m.version || "—";
       applySettings();
       applyHidden();
@@ -1548,6 +1666,12 @@ function onMessage(m) {
       state.previews[m.key || m.path] = m.uri || null;
       renderList();
       renderMini();
+      // תמונות המדבקות יושבות בכפתורים של העורך: מחליפים רק אותן, בלי לבנות מחדש.
+      if ((m.key || "").startsWith("sticker:") && m.uri) {
+        const b = document.querySelector(`[data-sticker="${CSS.escape(m.key.slice(8))}"]`);
+        const old = b && b.querySelector(".thumb");
+        if (old) { const img = document.createElement("img"); img.src = m.uri; img.alt = ""; old.replaceWith(img); }
+      }
       break;
 
     case "positionMode":
@@ -1574,9 +1698,15 @@ function onMessage(m) {
       state.update = {
         busy: !!m.busy, ready: m.ready || "", available: m.available || "", notes: m.notes || "",
         error: m.error || "", updatedTo: m.updatedTo || "", updatedNotes: m.updatedNotes || "",
-        failedTo: m.failedTo || "",
+        failedTo: m.failedTo || "", current: m.current || "", checkedAt: m.checkedAt || 0,
+        checkOk: !!m.checkOk, latest: m.latest || "", published: m.published || "", checkError: m.checkError || "",
       };
       applyUpdate();
+      break;
+
+    case "settings":
+      state.settings = Object.assign(state.settings, m.settings || {});
+      applySettings();
       break;
   }
 }

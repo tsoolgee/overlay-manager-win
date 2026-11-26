@@ -52,6 +52,9 @@ struct Settings {
     // Global show/hide hotkey, stored as MOD_* flags plus a virtual key.
     unsigned hotkeyMods = 0;
     unsigned hotkeyVk = 0;
+    // Global "show the next layer, hide the others" hotkey; vk 0 = off.
+    unsigned cycleMods = 0;
+    unsigned cycleVk = 0;
 };
 
 // Loads/saves %APPDATA%\Floaty\config.ini in the same layout Overlay Manager

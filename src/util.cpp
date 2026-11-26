@@ -48,6 +48,25 @@ bool IsAutoStartEnabled() {
     return present;
 }
 
+std::wstring AutoStartTarget() {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return {};
+    wchar_t buf[2048] = {0};
+    DWORD type = 0, size = sizeof(buf) - sizeof(wchar_t);
+    const bool ok = RegQueryValueExW(key, kRunValue, nullptr, &type, reinterpret_cast<BYTE*>(buf),
+                                     &size) == ERROR_SUCCESS && type == REG_SZ;
+    RegCloseKey(key);
+    if (!ok) return {};
+    // Written as "<path>" /minimized: the path is what is between the quotes.
+    std::wstring cmd = buf;
+    if (cmd.size() > 1 && cmd[0] == L'"') {
+        const size_t end = cmd.find(L'"', 1);
+        if (end != std::wstring::npos) return cmd.substr(1, end - 1);
+    }
+    return {};
+}
+
 void SetAutoStartEnabled(bool enabled) {
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key) !=

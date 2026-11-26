@@ -25,6 +25,7 @@ struct UpdateInfo {
     std::string downloadUrl;  // the program's .exe asset
     std::string sha256;       // upper-case hex; empty if the release has none
     std::string notes;        // the release notes, as plain text, for "What's new"
+    std::string publishedAt;  // the release's date, "YYYY-MM-DD"
     std::string error;        // Hebrew, for the page, when !ok
 };
 

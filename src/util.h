@@ -14,3 +14,5 @@ std::wstring ExePath();
 // HKCU\...\CurrentVersion\Run entry, so autostart needs no elevation.
 bool  IsAutoStartEnabled();
 void  SetAutoStartEnabled(bool enabled);
+// The executable the autostart entry points to; empty when there is none.
+std::wstring AutoStartTarget();

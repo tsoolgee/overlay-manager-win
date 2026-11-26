@@ -12,6 +12,10 @@ IDI_APP     ICON         "icon.ico"
 // executable with nothing to copy alongside it.
 IDR_UI_HTML RCDATA       "../ui/index.html"
 
+// Built-in stickers: a layer can use one instead of a file from the disk.
+IDR_STICKER_OUTNET RCDATA "stickers/out-net.png"
+IDR_STICKER_WIFREE RCDATA "stickers/wifree.png"
+
 VS_VERSION_INFO VERSIONINFO
   FILEVERSION     FLOATY_VERSION_RC
   PRODUCTVERSION  FLOATY_VERSION_RC

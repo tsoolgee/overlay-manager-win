@@ -19,7 +19,8 @@ const wchar_t* kAppName = L"Floaty";
 
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_UPDATE_DONE = WM_APP + 2;   // lParam: UpdateResult*, owned by the receiver
-const int kHotkeyId = 1;
+const int kHotkeyId = 1;        // hide / show everything
+const int kCycleHotkeyId = 2;   // show the next layer, hide the others
 
 // Broadcast by Explorer when the taskbar is (re)created, e.g. after Explorer
 // crashed or was restarted: every tray icon has to be added again.
@@ -36,6 +37,7 @@ enum {
     CMD_OPEN = 100,
     CMD_TOGGLE_ALL,
     CMD_EXIT,
+    CMD_NEXT_LAYER,
 };
 
 // A colour the ChooseColor dialog remembers between invocations.
@@ -118,15 +120,36 @@ void ApplyLayerJson(const js::Value& v, Layer& l) {
     if (v.has("bgTolerance")) l.bgTolerance = std::clamp(v["bgTolerance"].asInt(l.bgTolerance), 1, 100);
 }
 
-std::string HotkeyLabel(const Settings& s) {
+// The key's own name: letters and digits as they are, F-keys numbered, and
+// the rest (arrows, Home, Space...) as the keyboard driver names them. A plain
+// cast of the virtual-key code to a character made F1 read "p".
+std::wstring VkName(unsigned vk) {
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return std::wstring(1, (wchar_t)vk);
+    if (vk >= VK_F1 && vk <= VK_F24) return L"F" + std::to_wstring(vk - VK_F1 + 1);
+    UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    switch (vk) {  // keys on the extended part of the keyboard
+        case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_PRIOR: case VK_NEXT:
+        case VK_HOME: case VK_END: case VK_INSERT: case VK_DELETE: case VK_DIVIDE:
+            scan |= 0x100; break;
+        default: break;
+    }
+    wchar_t buf[64] = {0};
+    if (scan && GetKeyNameTextW((LONG)(scan << 16), buf, 64) > 0) return buf;
+    return L"#" + std::to_wstring(vk);
+}
+
+std::string HotkeyLabel(unsigned mods, unsigned vk) {
+    if (!vk) return {};
     std::wstring out;
-    if (s.hotkeyMods & MOD_CONTROL) out += L"Ctrl+";
-    if (s.hotkeyMods & MOD_ALT) out += L"Alt+";
-    if (s.hotkeyMods & MOD_SHIFT) out += L"Shift+";
-    if (s.hotkeyMods & MOD_WIN) out += L"Win+";
-    out += (wchar_t)s.hotkeyVk;
+    if (mods & MOD_CONTROL) out += L"Ctrl+";
+    if (mods & MOD_ALT) out += L"Alt+";
+    if (mods & MOD_SHIFT) out += L"Shift+";
+    if (mods & MOD_WIN) out += L"Win+";
+    out += VkName(vk);
     return ToUtf8(out);
 }
+
+std::string HotkeyLabel(const Settings& s) { return HotkeyLabel(s.hotkeyMods, s.hotkeyVk); }
 
 }  // namespace
 
@@ -185,11 +208,24 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     RefreshMonitors();
     settings_.hotkeyMods = MOD_CONTROL | MOD_ALT;
     settings_.hotkeyVk = 'H';
+    // N for "next". Ctrl+Alt is AltGr on a Hebrew keyboard, and AltGr+N types
+    // nothing there, so the combination takes no character away from anyone.
+    settings_.cycleMods = MOD_CONTROL | MOD_ALT;
+    settings_.cycleVk = 'N';
     LoadConfig(settings_, layers_);
 
     // The registry is the source of truth for autostart: the user may have
     // removed the entry through Task Manager since the config was written.
     settings_.autoStart = IsAutoStartEnabled();
+    // The entry names a path. If the program has since been moved and that
+    // file is gone, autostart would fail silently at the next logon: point
+    // it here. (A copy elsewhere that still exists is left alone, so running
+    // a second copy once does not take the entry over.)
+    if (settings_.autoStart) {
+        const std::wstring target = AutoStartTarget();
+        if (!target.empty() && GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES)
+            SetAutoStartEnabled(true);
+    }
 
     if (!layers_.empty()) selected_ = 0;
 
@@ -386,10 +422,7 @@ void App::Send(const std::string& json) {
     if (manager_) manager_->Post(json);
 }
 
-void App::SendInit() {
-    js::Object m;
-    m["t"] = "init";
-
+js::Value App::SettingsJson() const {
     js::Object s;
     s["autoStart"] = settings_.autoStart;
     s["minimizeToTray"] = settings_.minimizeToTray;
@@ -397,10 +430,29 @@ void App::SendInit() {
     s["lightTheme"] = settings_.lightTheme;
     s["autoUpdate"] = settings_.autoUpdate;
     s["hotkey"] = HotkeyLabel(settings_);
+    s["cycleHotkey"] = HotkeyLabel(settings_.cycleMods, settings_.cycleVk);
     // Shown in the status bar for as long as it is true, not only as a toast
     // that a window opened later never sees.
     s["hotkeyBusy"] = !hotkeyOk_;
-    m["settings"] = js::Value(std::move(s));
+    s["cycleBusy"] = settings_.cycleVk != 0 && !cycleOk_;
+    return js::Value(std::move(s));
+}
+
+void App::SendSettings() {
+    js::Object m;
+    m["t"] = "settings";
+    m["settings"] = SettingsJson();
+    Send(js::Value(std::move(m)).dump());
+}
+
+void App::SendInit() {
+    js::Object m;
+    m["t"] = "init";
+    m["settings"] = SettingsJson();
+
+    js::Array stickers;
+    for (const auto& name : StickerNames()) stickers.push_back(js::Value(ToUtf8(name)));
+    m["stickers"] = js::Value(std::move(stickers));
 
     js::Array mons;
     for (const auto& mon : Monitors()) {
@@ -435,6 +487,14 @@ void App::SendUpdateState() {
     m["updatedTo"] = updated_.to;       // this start is the result of an update
     m["updatedNotes"] = updated_.notes;
     m["failedTo"] = updateFailedTo_;    // an update was installed but did not take
+    // The last check, for the details line in the settings: when, what the
+    // newest release is and when it came out, or why the check failed.
+    m["current"] = AppVersion();
+    m["checkedAt"] = (double)lastCheck_.atMs;  // 0 = not checked since start
+    m["checkOk"] = lastCheck_.ok;
+    m["latest"] = lastCheck_.latest;
+    m["published"] = lastCheck_.published;
+    m["checkError"] = lastCheck_.error;
     Send(js::Value(std::move(m)).dump());
 }
 
@@ -560,6 +620,26 @@ void App::OnUiMessage(const std::string& json) {
         return;
     }
 
+    if (cmd == "sticker") {
+        // Only a name from the built-in list; never a path from the page.
+        const std::wstring name = ToWide(msg["name"].asString());
+        const auto names = StickerNames();
+        if (valid && std::find(names.begin(), names.end(), name) != names.end())
+            SetLayerImage(i, StickerPath(name));
+        return;
+    }
+
+    if (cmd == "setHotkey") {
+        SetHotkey(msg["which"].asString() == "cycle", (unsigned)msg["mods"].asInt(0),
+                  (unsigned)msg["vk"].asInt(0));
+        return;
+    }
+
+    if (cmd == "nextLayer") {
+        ShowNextLayer();
+        return;
+    }
+
     if (cmd == "browse") {
         if (valid) BrowseImage(i);
         return;
@@ -677,7 +757,9 @@ void App::OnUiMessage(const std::string& json) {
 
 void App::BrowseImage(int index) {
     wchar_t file[MAX_PATH * 4] = {0};
-    wcsncpy_s(file, layers_[index].image.c_str(), _TRUNCATE);
+    // A built-in sticker is not a path the file dialog could start from.
+    if (!IsStickerPath(layers_[index].image))
+        wcsncpy_s(file, layers_[index].image.c_str(), _TRUNCATE);
 
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -691,9 +773,13 @@ void App::BrowseImage(int index) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
 
     if (!GetOpenFileNameW(&ofn)) return;
+    SetLayerImage(index, file);
+}
 
+void App::SetLayerImage(int index, const std::wstring& image) {
     Layer& l = layers_[index];
-    l.image = file;
+    const bool hadPicture = !l.image.empty();
+    l.image = image;
 
     // Fit the box to the new image's aspect ratio, keeping the current width.
     int iw = 0, ih = 0;
@@ -701,8 +787,10 @@ void App::BrowseImage(int index) {
         if (l.lockAspect)
             l.height = std::max(16, (int)std::lround((double)l.width * ih / iw));
         // A layer that never had a picture starts life at the image's own size,
-        // clamped so a huge photo does not cover the whole screen.
-        if (l.name == L"שכבה חדשה" || (l.width == 200 && l.height == 200)) {
+        // clamped so a huge photo does not cover the whole screen. (This used
+        // to test for the name "שכבה חדשה", which new layers no longer get:
+        // "Add" names them "שכבה 1", "שכבה 2"...)
+        if (!hadPicture) {
             const int cap = 480;
             const double scale = std::min(1.0, (double)cap / std::max(iw, ih));
             l.width = std::max(16, (int)std::lround(iw * scale));
@@ -784,6 +872,7 @@ void App::ShowTrayMenu() {
     AppendMenuW(menu, MF_STRING, CMD_OPEN, L"פתח חלון ניהול");
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_ALL,
                 allHidden_ ? L"הצג הכל" : L"הסתר הכל");
+    if (layers_.size() > 1) AppendMenuW(menu, MF_STRING, CMD_NEXT_LAYER, L"השכבה הבאה");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_EXIT, L"יציאה");
 
@@ -791,24 +880,105 @@ void App::ShowTrayMenu() {
     GetCursorPos(&pt);
     // Required so the menu dismisses when the user clicks elsewhere.
     SetForegroundWindow(hidden_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RIGHTALIGN, pt.x, pt.y, 0, hidden_,
+    // TPM_LAYOUTRTL: a Hebrew menu, aligned and ordered right to left.
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_LAYOUTRTL, pt.x, pt.y, 0, hidden_,
                    nullptr);
     PostMessageW(hidden_, WM_NULL, 0, 0);
     DestroyMenu(menu);
 }
 
 void App::RegisterHotkey() {
+    // MOD_NOREPEAT: holding the keys down toggles once, not on every repeat.
     UnregisterHotKey(hidden_, kHotkeyId);
-    hotkeyOk_ = RegisterHotKey(hidden_, kHotkeyId, settings_.hotkeyMods, settings_.hotkeyVk) != FALSE;
-    if (!hotkeyOk_) {
-        // Another program already owns the combination. Not fatal: everything
-        // else still works, so say so once instead of refusing to start.
+    hotkeyOk_ = RegisterHotKey(hidden_, kHotkeyId, settings_.hotkeyMods | MOD_NOREPEAT,
+                               settings_.hotkeyVk) != FALSE;
+    UnregisterHotKey(hidden_, kCycleHotkeyId);
+    cycleOk_ = settings_.cycleVk == 0 ||
+               RegisterHotKey(hidden_, kCycleHotkeyId, settings_.cycleMods | MOD_NOREPEAT,
+                              settings_.cycleVk) != FALSE;
+    // Another program already owns a combination. Not fatal: everything else
+    // still works, so say so once instead of refusing to start.
+    for (const auto& [ok, label] : {std::pair{hotkeyOk_, HotkeyLabel(settings_)},
+                                    std::pair{cycleOk_, HotkeyLabel(settings_.cycleMods, settings_.cycleVk)}}) {
+        if (ok) continue;
         js::Object m;
         m["t"] = "toast";
-        m["text"] = "צירוף המקשים " + HotkeyLabel(settings_) + " תפוס על ידי תוכנה אחרת";
+        m["text"] = "צירוף המקשים " + label + " תפוס על ידי תוכנה אחרת";
         m["warn"] = true;
         Send(js::Value(std::move(m)).dump());
     }
+}
+
+void App::SetHotkey(bool cycle, unsigned mods, unsigned vk) {
+    mods &= MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
+    if (vk > 0xFE) return;
+    const int id = cycle ? kCycleHotkeyId : kHotkeyId;
+    unsigned& curMods = cycle ? settings_.cycleMods : settings_.hotkeyMods;
+    unsigned& curVk = cycle ? settings_.cycleVk : settings_.hotkeyVk;
+    bool& ok = cycle ? cycleOk_ : hotkeyOk_;
+    auto toast = [this](const std::string& text, bool warn) {
+        js::Object t;
+        t["t"] = "toast";
+        t["text"] = text;
+        t["warn"] = warn;
+        Send(js::Value(std::move(t)).dump());
+    };
+
+    // Hiding everything has no "off": without it there is no way to get the
+    // layers out of a screenshot. Only the next-layer key can be turned off.
+    if (vk == 0 && !cycle) return;
+    const unsigned otherMods = cycle ? settings_.hotkeyMods : settings_.cycleMods;
+    const unsigned otherVk = cycle ? settings_.hotkeyVk : settings_.cycleVk;
+    if (vk && vk == otherVk && mods == otherMods) {
+        toast("הצירוף " + HotkeyLabel(mods, vk) + " כבר משמש לקיצור השני", true);
+        SendSettings();
+        return;
+    }
+
+    UnregisterHotKey(hidden_, id);
+    if (vk && !RegisterHotKey(hidden_, id, mods | MOD_NOREPEAT, vk)) {
+        // Taken by another program: keep the one that worked.
+        if (curVk) ok = RegisterHotKey(hidden_, id, curMods | MOD_NOREPEAT, curVk) != FALSE;
+        toast("הצירוף " + HotkeyLabel(mods, vk) + " תפוס על ידי תוכנה אחרת. הקיצור לא השתנה", true);
+        SendSettings();
+        return;
+    }
+    curMods = mods;
+    curVk = vk;
+    ok = true;
+    SaveConfig(settings_, layers_);
+    SendSettings();
+    toast(vk ? "הקיצור עודכן ל-" + HotkeyLabel(mods, vk) : std::string("הקיצור לשכבה הבאה כובה"), false);
+}
+
+void App::ShowNextLayer() {
+    // Only layers with a picture take part; a layer without one would show
+    // nothing, which looks like the key did not work.
+    std::vector<int> pics;
+    for (int i = 0; i < (int)layers_.size(); ++i)
+        if (!layers_[i].image.empty()) pics.push_back(i);
+    if (pics.empty()) return;
+
+    // From exactly one shown layer, move to the next; from any other state
+    // (none shown, several shown), start at the first.
+    int shown = -1, count = 0;
+    for (int i : pics)
+        if (layers_[i].enabled) { shown = i; ++count; }
+    int next = pics.front();
+    if (count == 1) {
+        const auto it = std::find(pics.begin(), pics.end(), shown);
+        next = (it + 1 == pics.end()) ? pics.front() : *(it + 1);
+    }
+
+    for (int i = 0; i < (int)layers_.size(); ++i) {
+        const bool want = i == next;
+        if (layers_[i].enabled == want) continue;
+        layers_[i].enabled = want;
+        SyncOverlay(i);
+    }
+    if (allHidden_) SetAllHidden(false);
+    SendLayers(selected_);
+    SaveConfig(settings_, layers_);
 }
 
 // --- updates ---------------------------------------------------------------
@@ -842,6 +1012,21 @@ void App::OnUpdateFinished(UpdateResult* result) {
     std::unique_ptr<UpdateResult> r(result);
     updateBusy_ = false;
 
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    const unsigned long long ticks = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    lastCheck_.atMs = (long long)(ticks / 10000ULL - 11644473600000ULL);  // Unix milliseconds
+    lastCheck_.ok = r->info.ok;
+    lastCheck_.latest = r->info.version;
+    lastCheck_.published = r->info.publishedAt;
+    lastCheck_.error = r->info.error;
+
+    // "26.11.2026" from "2026-11-26", for the messages below.
+    std::string published;
+    if (r->info.publishedAt.size() == 10)
+        published = r->info.publishedAt.substr(8, 2) + "." + r->info.publishedAt.substr(5, 2) + "." +
+                    r->info.publishedAt.substr(0, 4);
+
     std::string text;
     bool warn = false;
     if (r->installed) {
@@ -873,9 +1058,12 @@ void App::OnUpdateFinished(UpdateResult* result) {
     } else if (r->info.newer) {
         updateAvailable_ = r->info.version;
         updateNotes_ = r->info.notes;
+        text = "נמצאה גרסה " + r->info.version + (published.empty() ? "" : ", שפורסמה ב-" + published) +
+               ". הגרסה שלך: " + AppVersion();
     } else {
         updateAvailable_.clear();
-        text = std::string("זו הגרסה העדכנית ביותר (") + AppVersion() + ")";
+        text = std::string("יש לך את הגרסה העדכנית ביותר, ") + AppVersion() +
+               (published.empty() ? "" : " (פורסמה ב-" + published + ")");
     }
 
     SendUpdateState();
@@ -938,6 +1126,7 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 case CMD_OPEN: ShowManager(); return 0;
                 case CMD_TOGGLE_ALL: SetAllHidden(!allHidden_); return 0;
                 case CMD_EXIT: RequestQuit(); return 0;
+                case CMD_NEXT_LAYER: ShowNextLayer(); return 0;
                 default: break;
             }
             break;
@@ -957,6 +1146,7 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_HOTKEY:
             if (wp == kHotkeyId) SetAllHidden(!allHidden_);
+            else if (wp == kCycleHotkeyId) ShowNextLayer();
             return 0;
 
         case WM_DISPLAYCHANGE: {

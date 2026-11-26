@@ -93,6 +93,8 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
     settings.hotkeyMods     = (unsigned)GetInt(kGeneral, L"HotkeyMods",
                                                MOD_CONTROL | MOD_ALT, path);
     settings.hotkeyVk       = (unsigned)GetInt(kGeneral, L"HotkeyVk", 'H', path);
+    settings.cycleMods      = (unsigned)GetInt(kGeneral, L"CycleHotkeyMods", (int)settings.cycleMods, path);
+    settings.cycleVk        = (unsigned)GetInt(kGeneral, L"CycleHotkeyVk", (int)settings.cycleVk, path);
 
     const int count = GetInt(kGeneral, L"Count", 0, path);
     layers.clear();
@@ -143,6 +145,8 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
     PutInt(text, L"AutoUpdate", settings.autoUpdate ? 1 : 0);
     PutInt(text, L"HotkeyMods", settings.hotkeyMods);
     PutInt(text, L"HotkeyVk", settings.hotkeyVk);
+    PutInt(text, L"CycleHotkeyMods", settings.cycleMods);
+    PutInt(text, L"CycleHotkeyVk", settings.cycleVk);
 
     for (size_t i = 0; i < layers.size(); ++i) {
         const Layer& l = layers[i];

@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "json.h"
 #include "manager.h"
 #include "model.h"
 #include "overlay.h"
@@ -23,6 +24,8 @@ public:
 private:
     // --- messages from the page ---
     void OnUiMessage(const std::string& json);
+    js::Value SettingsJson() const;
+    void SendSettings();
     void SendInit();
     void SendLayers(int selected);
     void SendPreview(const std::wstring& path, int bgTolerance);
@@ -44,6 +47,8 @@ private:
     void UpdateTrayIcon();
     void ShowTrayMenu();
     void RegisterHotkey();
+    void SetHotkey(bool cycle, unsigned mods, unsigned vk);
+    void ShowNextLayer();
 
     // --- updates ---
     void StartUpdateCheck(bool manual, bool install);
@@ -55,6 +60,7 @@ private:
 
     // --- dialogs, run on the UI thread in response to a page request ---
     void BrowseImage(int index);
+    void SetLayerImage(int index, const std::wstring& image);
     void PickTint(int index);
 
     static LRESULT CALLBACK HiddenProc(HWND, UINT, WPARAM, LPARAM);
@@ -74,6 +80,7 @@ private:
     bool allHidden_ = false;
     bool trayAdded_ = false;
     bool hotkeyOk_ = true;          // false while another program owns the combination
+    bool cycleOk_ = true;           // the same, for the next-layer key
     bool quitting_ = false;
 
     bool updateBusy_ = false;
@@ -83,6 +90,11 @@ private:
     std::string updateError_;      // why the last install failed, for the page
     UpdateRecord updated_;         // this start is the result of an update
     std::string updateFailedTo_;   // an installed update that did not take
+    struct {
+        long long atMs = 0;        // when the last check finished (Unix ms); 0 = none yet
+        bool ok = false;
+        std::string latest, published, error;
+    } lastCheck_;
 
     std::unique_ptr<ManagerWindow> manager_;
 };

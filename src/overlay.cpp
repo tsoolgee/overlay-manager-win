@@ -12,6 +12,9 @@
 #include <memory>
 #include <vector>
 
+#include <shlwapi.h>
+
+#include "resource.h"
 #include "util.h"
 
 using namespace Gdiplus;
@@ -208,8 +211,58 @@ static Bitmap* DecodeWithWic(const std::wstring& path) {
     return out;
 }
 
-static std::unique_ptr<Bitmap> OpenImageFile(const std::wstring& path) {
+static std::unique_ptr<Bitmap> InMemoryCopy(Bitmap& src);
+
+namespace {
+struct StickerDef { const wchar_t* name; int id; };
+const StickerDef kStickers[] = {
+    {L"out-net", IDR_STICKER_OUTNET},
+    {L"wifree", IDR_STICKER_WIFREE},
+};
+const wchar_t kStickerPrefix[] = L"sticker:";
+}  // namespace
+
+std::vector<std::wstring> StickerNames() {
+    std::vector<std::wstring> out;
+    for (const auto& s : kStickers) out.push_back(s.name);
+    return out;
+}
+
+bool IsStickerPath(const std::wstring& image) { return image.rfind(kStickerPrefix, 0) == 0; }
+
+std::wstring StickerPath(const std::wstring& name) { return kStickerPrefix + name; }
+
+// A built-in sticker, decoded from the PNG embedded in the executable. GDI+
+// reads a stream-backed Bitmap lazily, so the stream must outlive it — unless
+// the pixels are copied out, which `copy` does for anything that keeps it.
+static std::unique_ptr<Bitmap> OpenSticker(const std::wstring& name, bool copy) {
+    int id = 0;
+    for (const auto& s : kStickers)
+        if (name == s.name) id = s.id;
+    if (!id) return nullptr;
+    HRSRC res = FindResourceW(nullptr, MAKEINTRESOURCEW(id), RT_RCDATA);
+    HGLOBAL mem = res ? LoadResource(nullptr, res) : nullptr;
+    const void* bytes = mem ? LockResource(mem) : nullptr;
+    const DWORD size = res ? SizeofResource(nullptr, res) : 0;
+    if (!bytes || !size) return nullptr;
+    IStream* stream = SHCreateMemStream(static_cast<const BYTE*>(bytes), size);
+    if (!stream) return nullptr;
+    std::unique_ptr<Bitmap> bmp(Bitmap::FromStream(stream));
+    std::unique_ptr<Bitmap> out;
+    if (bmp && bmp->GetLastStatus() == Ok) {
+        if (copy)
+            out = InMemoryCopy(*bmp);
+        else  // only the size is wanted, and it is read before the stream goes
+            out = std::make_unique<Bitmap>((INT)bmp->GetWidth(), (INT)bmp->GetHeight(), PixelFormat32bppARGB);
+    }
+    bmp.reset();
+    stream->Release();
+    return out;
+}
+
+static std::unique_ptr<Bitmap> OpenImageFile(const std::wstring& path, bool forDrawing = true) {
     if (path.empty()) return nullptr;
+    if (IsStickerPath(path)) return OpenSticker(path.substr(wcslen(kStickerPrefix)), forDrawing);
     std::unique_ptr<Bitmap> bmp(Bitmap::FromFile(path.c_str(), FALSE));
     if (bmp && bmp->GetLastStatus() == Ok) return bmp;
     return std::unique_ptr<Bitmap>(DecodeWithWic(path));
@@ -351,7 +404,7 @@ static std::unique_ptr<Bitmap> OpenLayerImage(const std::wstring& path, int bgTo
 
 bool ImagePixelSize(const std::wstring& path, int& outW, int& outH) {
     if (path.empty()) return false;
-    auto bmp = OpenImageFile(path);
+    auto bmp = OpenImageFile(path, false);
     if (!bmp) return false;
     outW = (int)bmp->GetWidth();
     outH = (int)bmp->GetHeight();

@@ -280,6 +280,7 @@ UpdateInfo CheckForUpdate() {
     }
     if (info.sha256.empty()) info.sha256 = FindSha256(rel["body"].asString());
     info.notes = PlainNotes(rel["body"].asString());
+    info.publishedAt = rel["published_at"].asString().substr(0, 10);  // "2026-11-26T05:22:41Z"
 
     if (info.newer && info.downloadUrl.empty()) {
         info.newer = false;
