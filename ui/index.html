@@ -752,6 +752,7 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
 .version-row .spacer { flex: 1; }
 .about { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
 .about a { color: var(--accent-ink); }
+.about.credit { color: var(--muted); text-align: right; margin-top: 2px; }
 
 /* ---------- פסי גלילה ---------- */
 ::-webkit-scrollbar { width: 12px; height: 12px; }
@@ -888,6 +889,8 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
       <h3>אודות</h3>
       <!-- כל מילה באנגלית בתוך bdi: אחרת "tsoolgee · MIT" נקרא כרצף LTR אחד והסדר מתהפך -->
       <p class="about">מבוסס על <a href="#" data-link="original"><bdi>Overlay Manager</bdi></a> של <bdi>tsoolgee</bdi> · <bdi>MIT</bdi> · <a href="#" data-link="home">גיטהאב</a></p>
+      <!-- הקרדיט שהרישיון של Overlay Manager דורש להציג בממשק, מילה במילה -->
+      <p class="about credit" dir="ltr">Based on software by tsoolgee — <a href="#" data-link="tsoolgee">https://github.com/tsoolgee</a></p>
     </section>
   </div>
   <div class="dlg-foot">

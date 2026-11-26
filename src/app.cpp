@@ -910,6 +910,7 @@ void App::OnUiMessage(const std::string& json) {
         const std::string which = msg["which"].asString();
         const wchar_t* url = which == "home"     ? L"https://github.com/BeniaBot/floaty"
                            : which == "original" ? L"https://github.com/tsoolgee/overlay-manager-win"
+                           : which == "tsoolgee" ? L"https://github.com/tsoolgee"
                            : nullptr;
         if (url) ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
         return;
