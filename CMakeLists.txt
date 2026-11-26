@@ -85,7 +85,7 @@ target_include_directories(OverlayManager PRIVATE
 # The static loader keeps this a single file: no WebView2Loader.dll to ship.
 target_link_libraries(OverlayManager PRIVATE
   "${WEBVIEW2_DIR}/build/native/${_wv2_arch}/WebView2LoaderStatic.lib"
-  gdiplus windowscodecs winhttp bcrypt comctl32 comdlg32 shell32 advapi32 user32 gdi32 ole32 shlwapi version
+  gdiplus windowscodecs winhttp bcrypt comctl32 comdlg32 shell32 advapi32 user32 gdi32 ole32 shlwapi version dwmapi
 )
 
 set_target_properties(OverlayManager PROPERTIES OUTPUT_NAME "OverlayManager")

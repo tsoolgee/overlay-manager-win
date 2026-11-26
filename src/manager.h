@@ -25,6 +25,9 @@ public:
     void Show();
     void Hide();
     bool IsVisible() const;
+
+    // Follows the page's theme with the title bar and the colour behind the page.
+    void SetTheme(bool light);
     HWND Hwnd() const { return hwnd_; }
 
     // Queues a JSON message to the page; sends are buffered until the WebView
@@ -37,6 +40,9 @@ private:
 
     void ResizeWebView();
     void FlushQueue();
+    void ApplyWebViewBackground();
+
+    bool light_ = false;
 
     struct Impl;
     Impl* impl_ = nullptr;  // holds the WebView2 COM pointers

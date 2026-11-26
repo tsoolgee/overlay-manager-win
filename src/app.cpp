@@ -37,6 +37,13 @@ enum {
 // A colour the ChooseColor dialog remembers between invocations.
 COLORREF g_customColors[16] = {0};
 
+// Hebrew text in a message box needs right-to-left reading order and right
+// alignment, or the punctuation lands on the wrong side and the text hugs the
+// left edge.
+int HebrewMessageBox(HWND owner, const wchar_t* text, UINT flags) {
+    return MessageBoxW(owner, text, kAppName, flags | MB_RTLREADING | MB_RIGHT);
+}
+
 // Serialises one layer for the page. Field names match the model, so the
 // JavaScript reads like the C++.
 js::Value LayerToJson(const Layer& l) {
@@ -159,15 +166,15 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
         if (HWND existing = FindWindowW(kHiddenClass, nullptr))
             PostMessageW(existing, WM_COMMAND, CMD_OPEN, 0);
         else
-            MessageBoxW(nullptr, L"לא ניתן היה להחליף את המופע הקודם של התוכנה.",
-                        kAppName, MB_ICONWARNING | MB_OK);
+            HebrewMessageBox(nullptr, L"לא ניתן היה להחליף את המופע הקודם של התוכנה.",
+                             MB_ICONWARNING | MB_OK);
         CloseHandle(mutex_);
         mutex_ = nullptr;
         return false;
     }
 
     if (!GdiPlusStart()) {
-        MessageBoxW(nullptr, L"לא ניתן היה לאתחל את GDI+.", kAppName, MB_ICONERROR);
+        HebrewMessageBox(nullptr, L"לא ניתן היה לאתחל את GDI+.", MB_ICONERROR);
         return false;
     }
 
@@ -353,6 +360,9 @@ void App::SendInit() {
     s["lightTheme"] = settings_.lightTheme;
     s["autoUpdate"] = settings_.autoUpdate;
     s["hotkey"] = HotkeyLabel(settings_);
+    // Shown in the status bar for as long as it is true, not only as a toast
+    // that a window opened later never sees.
+    s["hotkeyBusy"] = !hotkeyOk_;
     m["settings"] = js::Value(std::move(s));
 
     js::Array mons;
@@ -465,11 +475,15 @@ void App::OnUiMessage(const std::string& json) {
 
     if (cmd == "delete") {
         if (!valid) return;
-        const std::wstring prompt =
-            L"למחוק את השכבה \"" + layers_[i].name + L"\"?\n\nאי אפשר לבטל את הפעולה.";
-        if (MessageBoxW(manager_ ? manager_->Hwnd() : nullptr, prompt.c_str(),
-                        kAppName, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
-            return;
+        // The page asks in its own dialog and says so; anything else still
+        // gets a native confirmation.
+        if (!msg["confirmed"].asBool(false)) {
+            const std::wstring prompt =
+                L"למחוק את השכבה \"" + layers_[i].name + L"\"?\n\nאי אפשר לבטל את הפעולה.";
+            if (HebrewMessageBox(manager_ ? manager_->Hwnd() : nullptr, prompt.c_str(),
+                                 MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+                return;
+        }
         layers_.erase(layers_.begin() + i);
         if (positionIndex_ == i)
             RemapPositionIndex(-1);
@@ -550,6 +564,8 @@ void App::OnUiMessage(const std::string& json) {
         }
         settings_.minimizeToTray = s["minimizeToTray"].asBool(settings_.minimizeToTray);
         settings_.lightTheme = s["lightTheme"].asBool(settings_.lightTheme);
+        // The frame (title bar, the fill behind the page) follows the page's theme.
+        if (manager_) manager_->SetTheme(settings_.lightTheme);
         settings_.autoUpdate = s["autoUpdate"].asBool(settings_.autoUpdate);
 
         const bool wantTray = s["showTrayIcon"].asBool(settings_.showTrayIcon);
@@ -564,17 +580,13 @@ void App::OnUiMessage(const std::string& json) {
     }
 
     if (cmd == "save") {
-        if (SaveConfig(settings_, layers_)) {
-            js::Object m;
-            m["t"] = "saved";
-            Send(js::Value(std::move(m)).dump());
-        } else {
-            js::Object m;
-            m["t"] = "toast";
-            m["text"] = "השמירה נכשלה — אין הרשאת כתיבה לתיקיית ההגדרות";
-            m["warn"] = true;
-            Send(js::Value(std::move(m)).dump());
-        }
+        // The page saves by itself after every edit and keeps the outcome in
+        // its status bar, so a failure is a state there rather than a toast
+        // repeated on every keystroke.
+        js::Object m;
+        m["t"] = "saved";
+        m["ok"] = SaveConfig(settings_, layers_);
+        Send(js::Value(std::move(m)).dump());
         return;
     }
 
@@ -720,7 +732,8 @@ void App::ShowTrayMenu() {
 
 void App::RegisterHotkey() {
     UnregisterHotKey(hidden_, kHotkeyId);
-    if (!RegisterHotKey(hidden_, kHotkeyId, settings_.hotkeyMods, settings_.hotkeyVk)) {
+    hotkeyOk_ = RegisterHotKey(hidden_, kHotkeyId, settings_.hotkeyMods, settings_.hotkeyVk) != FALSE;
+    if (!hotkeyOk_) {
         // Another program already owns the combination. Not fatal: everything
         // else still works, so say so once instead of refusing to start.
         js::Object m;

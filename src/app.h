@@ -71,6 +71,7 @@ private:
     bool positionWasHidden_ = false;
     bool allHidden_ = false;
     bool trayAdded_ = false;
+    bool hotkeyOk_ = true;          // false while another program owns the combination
     bool quitting_ = false;
 
     bool updateBusy_ = false;
