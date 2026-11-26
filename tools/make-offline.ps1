@@ -68,19 +68,20 @@ try {
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $packed)) { throw "makecab failed ($LASTEXITCODE)" }
 
     $cabSize = (Get-Item $packed).Length
-    $out = [IO.File]::Create($Out)
+    # Not a variable named like the -Out parameter: PowerShell names ignore case.
+    $stream = [IO.File]::Create($Out)
     try {
         foreach ($part in @($Exe, $packed)) {
             $in = [IO.File]::OpenRead($part)
-            try { $in.CopyTo($out, 4MB) } finally { $in.Dispose() }
+            try { $in.CopyTo($stream, 4MB) } finally { $in.Dispose() }
         }
         # Trailer: 16-byte magic (15 chars + NUL), then the .cab size as a little-endian uint64.
         $magic = [Text.Encoding]::ASCII.GetBytes('FloatyRuntime01') + [byte]0
-        $out.Write($magic, 0, 16)
+        $stream.Write($magic, 0, 16)
         $size = [BitConverter]::GetBytes([uint64]$cabSize)
-        $out.Write($size, 0, 8)
+        $stream.Write($size, 0, 8)
     } finally {
-        $out.Dispose()
+        $stream.Dispose()
     }
 } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
