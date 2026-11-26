@@ -608,8 +608,11 @@ void OverlayWindow::ApplyVisibility() {
     const bool visible =
         layer_.enabled && !hiddenByHotkey_ && (hasContent || positionMode_);
     // SWP_NOACTIVATE leaves focus with whatever the user is actually working in.
-    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+    // SWP_NOZORDER: the stacking between layers is the list order, which the
+    // App sets (RestackOverlays); re-raising here put whichever layer was
+    // edited last on top of the others.
+    SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER |
                      (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
 

@@ -274,6 +274,19 @@ void App::RebuildOverlays() {
     }
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
         overlays_[positionIndex_]->SetPositionMode(true);
+    RestackOverlays();
+}
+
+void App::RestackOverlays() {
+    // The list order is the paint order: a later layer covers an earlier one.
+    // Raising each window in turn to the top of the topmost band leaves them
+    // stacked exactly that way.
+    const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    for (auto& o : overlays_) SetWindowPos(o->Hwnd(), HWND_TOPMOST, 0, 0, 0, 0, flags);
+    // While a layer is being positioned it has to be grabbable, even where a
+    // later layer would cover it.
+    if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
+        SetWindowPos(overlays_[positionIndex_]->Hwnd(), HWND_TOPMOST, 0, 0, 0, 0, flags);
 }
 
 void App::SyncOverlay(int index) {
@@ -317,6 +330,7 @@ void App::SetPositionMode(int index, bool on) {
             SendLayers(selected_);
         }
     }
+    RestackOverlays();
 
     js::Object m;
     m["t"] = "positionMode";
