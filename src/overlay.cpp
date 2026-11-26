@@ -313,13 +313,40 @@ static std::unique_ptr<Bitmap> RemoveBackground(Bitmap& src, int tolerance) {
     return out;
 }
 
-// The layer's picture as it will be drawn: decoded, and with the background
-// cleared when bgTolerance > 0.
+// A Bitmap that GDI+ opened from a file keeps that file open for as long as it
+// lives, and the open blocks writes, renames and deletes: while a layer was on
+// screen its picture could not be saved over from an image editor. This copies
+// the pixels into a bitmap of its own, so the file is let go of right away.
+static std::unique_ptr<Bitmap> InMemoryCopy(Bitmap& src) {
+    const int w = (int)src.GetWidth(), h = (int)src.GetHeight();
+    if (w <= 0 || h <= 0) return nullptr;
+    auto out = std::make_unique<Bitmap>(w, h, PixelFormat32bppARGB);
+    if (out->GetLastStatus() != Ok) return nullptr;
+
+    Rect rc(0, 0, w, h);
+    BitmapData from{}, to{};
+    if (src.LockBits(&rc, ImageLockModeRead, PixelFormat32bppARGB, &from) != Ok) return nullptr;
+    if (out->LockBits(&rc, ImageLockModeWrite, PixelFormat32bppARGB, &to) != Ok) {
+        src.UnlockBits(&from);
+        return nullptr;
+    }
+    for (int y = 0; y < h; ++y)
+        memcpy(static_cast<BYTE*>(to.Scan0) + (size_t)y * to.Stride,
+               static_cast<BYTE*>(from.Scan0) + (size_t)y * from.Stride, (size_t)w * 4);
+    out->UnlockBits(&to);
+    src.UnlockBits(&from);
+    return out;
+}
+
+// The layer's picture as it will be drawn: decoded, with the background
+// cleared when bgTolerance > 0, and never holding the file open.
 static std::unique_ptr<Bitmap> OpenLayerImage(const std::wstring& path, int bgTolerance) {
     auto bmp = OpenImageFile(path);
-    if (bmp && bgTolerance > 0)
+    if (!bmp) return nullptr;
+    if (bgTolerance > 0)
         if (auto cleared = RemoveBackground(*bmp, bgTolerance)) return cleared;
-    return bmp;
+    if (auto copy = InMemoryCopy(*bmp)) return copy;
+    return bmp;  // out of memory for a copy: draw it anyway, file stays locked
 }
 
 bool ImagePixelSize(const std::wstring& path, int& outW, int& outH) {
