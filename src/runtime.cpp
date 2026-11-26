@@ -28,7 +28,7 @@ struct Trailer {
 static_assert(sizeof(Trailer) == 24, "the trailer is written by tools/make-offline.ps1");
 
 const wchar_t* kTitle = L"Floaty";
-const wchar_t* kReleases = L"https://github.com/BeniaBot/floaty/releases/latest";
+const wchar_t* kReleases = L"https://github.com/tsoolgee/overlay-manager-win/releases/latest";
 // Microsoft's Evergreen bootstrapper: a small download that installs the runtime.
 const wchar_t* kBootstrapper = L"https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 
@@ -410,7 +410,7 @@ void ReportMissingRuntime(HWND owner) {
 void ReportRuntimeError(HWND owner, const std::wstring& what) {
     std::wstring content = what;
     content += L"\n\nאפשר לנסות לפתוח את Floaty שוב. אם זה חוזר, ";
-    content += L"<a href=\"https://github.com/BeniaBot/floaty/issues\">ספרו לנו</a>.";
+    content += L"<a href=\"https://github.com/tsoolgee/overlay-manager-win/issues\">ספרו לנו</a>.";
     TASKDIALOGCONFIG tc{};
     tc.cbSize = sizeof tc;
     tc.hwndParent = owner;

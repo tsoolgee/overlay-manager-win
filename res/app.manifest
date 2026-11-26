@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="BeniaBot.Floaty" version="1.0.0.0"/>
+  <assemblyIdentity type="win32" name="tsoolgee.Floaty" version="1.0.0.0"/>
   <description>Floaty</description>
 
   <!-- Common Controls v6, for themed dialogs and the file picker. -->

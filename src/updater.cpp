@@ -19,7 +19,7 @@
 namespace {
 
 // The repository whose releases this build updates from.
-const char* kRepo = "BeniaBot/floaty";
+const char* kRepo = "tsoolgee/overlay-manager-win";
 const char* kExeAsset = "Floaty.exe";
 const char* kHashAsset = "Floaty.exe.sha256";
 

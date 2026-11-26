@@ -908,7 +908,7 @@ void App::OnUiMessage(const std::string& json) {
     if (cmd == "openLink") {
         // A fixed list, not a URL from the page: the page can only name one.
         const std::string which = msg["which"].asString();
-        const wchar_t* url = which == "home"     ? L"https://github.com/BeniaBot/floaty"
+        const wchar_t* url = which == "home"     ? L"https://github.com/tsoolgee/overlay-manager-win"
                            : which == "original" ? L"https://github.com/tsoolgee/overlay-manager-win"
                            : nullptr;
         if (url) ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
