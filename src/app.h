@@ -10,6 +10,7 @@
 #include "manager.h"
 #include "model.h"
 #include "overlay.h"
+#include "updater.h"
 
 class App {
 public:
@@ -45,7 +46,7 @@ private:
     void RegisterHotkey();
 
     // --- updates ---
-    void StartUpdateCheck(bool manual);
+    void StartUpdateCheck(bool manual, bool install);
     void OnUpdateFinished(struct UpdateResult* result);
     void RestartIntoUpdate();
 
@@ -76,8 +77,12 @@ private:
     bool quitting_ = false;
 
     bool updateBusy_ = false;
-    std::string updateReady_;    // version installed and waiting for a restart
-    bool justUpdated_ = false;   // started by the updater; say so once
+    std::string updateReady_;      // version installed and waiting for a restart
+    std::string updateAvailable_;  // newer version found but not installed
+    std::string updateNotes_;      // its release notes, plain text
+    std::string updateError_;      // why the last install failed, for the page
+    UpdateRecord updated_;         // this start is the result of an update
+    std::string updateFailedTo_;   // an installed update that did not take
 
     std::unique_ptr<ManagerWindow> manager_;
 };

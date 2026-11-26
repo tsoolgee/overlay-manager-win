@@ -235,7 +235,18 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     // reported to the page, and Send() drops messages while there is no page.
     RegisterHotkey();
 
-    justUpdated_ = afterUpdate;
+    // An update left a note for this start: either it worked (this is the
+    // version it installed) or it did not take, and either way the page says so.
+    // Only a note about this very file counts: another copy of the program in
+    // another folder shares the settings folder but was not the one replaced.
+    const UpdateRecord record = TakeUpdateRecord();
+    if (record.present && _wcsicmp(ToWide(record.exe).c_str(), ExePath().c_str()) == 0) {
+        if (record.to == AppVersion())
+            updated_ = record;
+        else
+            updateFailedTo_ = record.to;
+    }
+    (void)afterUpdate;
     CleanupAfterUpdate();
     SetTimer(hidden_, kUpdateTimer, kFirstCheckMs, nullptr);
     return true;
@@ -409,20 +420,21 @@ void App::SendInit() {
 
     Send(js::Value(std::move(m)).dump());
     SendUpdateState();
-    if (justUpdated_) {
-        justUpdated_ = false;
-        js::Object t;
-        t["t"] = "toast";
-        t["text"] = std::string("התוכנה עודכנה לגרסה ") + AppVersion();
-        Send(js::Value(std::move(t)).dump());
-    }
 }
 
 void App::SendUpdateState() {
+    // Everything the page needs to say about updates, as state rather than
+    // toasts: a window opened hours after the event still shows it.
     js::Object m;
     m["t"] = "update";
     m["busy"] = updateBusy_;
-    m["ready"] = updateReady_;
+    m["ready"] = updateReady_;          // installed, waiting for a restart
+    m["available"] = updateAvailable_;  // found, automatic install is off
+    m["notes"] = updateNotes_;          // what the ready/available release says
+    m["error"] = updateError_;          // the last install attempt failed
+    m["updatedTo"] = updated_.to;       // this start is the result of an update
+    m["updatedNotes"] = updated_.notes;
+    m["failedTo"] = updateFailedTo_;    // an update was installed but did not take
     Send(js::Value(std::move(m)).dump());
 }
 
@@ -617,7 +629,26 @@ void App::OnUiMessage(const std::string& json) {
     }
 
     if (cmd == "checkUpdate") {
-        StartUpdateCheck(true);
+        StartUpdateCheck(true, settings_.autoUpdate);
+        return;
+    }
+
+    if (cmd == "installUpdate") {
+        updateError_.clear();
+        StartUpdateCheck(true, true);
+        return;
+    }
+
+    if (cmd == "openReleases") {
+        ShellExecuteW(nullptr, L"open", ToWide(ReleasesPageUrl()).c_str(), nullptr, nullptr,
+                      SW_SHOWNORMAL);
+        return;
+    }
+
+    if (cmd == "dismissUpdated") {
+        updated_ = UpdateRecord{};
+        updateFailedTo_.clear();
+        SendUpdateState();
         return;
     }
 
@@ -772,7 +803,7 @@ void App::RegisterHotkey() {
 
 // --- updates ---------------------------------------------------------------
 
-void App::StartUpdateCheck(bool manual) {
+void App::StartUpdateCheck(bool manual, bool install) {
     if (updateBusy_) return;
     if (!updateReady_.empty()) {
         // Already downloaded; checking again would only fetch the same file.
@@ -783,11 +814,13 @@ void App::StartUpdateCheck(bool manual) {
     if (manual) SendUpdateState();
 
     const HWND target = hidden_;
-    std::thread([target, manual] {
+    std::thread([target, manual, install] {
         auto* r = new UpdateResult;
         r->manual = manual;
         r->info = CheckForUpdate();
-        if (r->info.ok && r->info.newer) {
+        // With automatic install off, a newer release is only announced; it is
+        // installed when the user presses "Update now".
+        if (r->info.ok && r->info.newer && install) {
             r->installError = DownloadAndInstall(r->info);
             r->installed = r->installError.empty();
         }
@@ -803,6 +836,12 @@ void App::OnUpdateFinished(UpdateResult* result) {
     bool warn = false;
     if (r->installed) {
         updateReady_ = r->info.version;
+        updateNotes_ = r->info.notes;
+        updateAvailable_.clear();
+        updateError_.clear();
+        // The next start reads this to say "updated to X" with the notes, or
+        // that the swap did not take.
+        WriteUpdateRecord(r->info);
         // Nobody is looking at the window: restart straight away, the overlays
         // come back within a second. Otherwise leave the choice to the user.
         if (!manager_ || !manager_->IsVisible()) {
@@ -813,19 +852,25 @@ void App::OnUpdateFinished(UpdateResult* result) {
         text = r->info.error;
         warn = true;
     } else if (!r->installError.empty()) {
-        text = "העדכון לגרסה " + r->info.version + " נכשל: " + r->installError;
-        warn = true;
+        // Kept as state: the page shows it with a manual-download button until
+        // an install succeeds, since a toast is gone before anyone reads it.
+        updateError_ = "העדכון לגרסה " + r->info.version + " לא הותקן: " + r->installError;
+        updateAvailable_ = r->info.version;
+        updateNotes_ = r->info.notes;
     } else if (!r->info.error.empty()) {
         text = r->info.error;
         warn = true;
+    } else if (r->info.newer) {
+        updateAvailable_ = r->info.version;
+        updateNotes_ = r->info.notes;
     } else {
+        updateAvailable_.clear();
         text = std::string("זו הגרסה העדכנית ביותר (") + AppVersion() + ")";
     }
 
     SendUpdateState();
-    // A background check stays quiet unless it has something to show; a
-    // failed install is worth knowing about either way.
-    if (!text.empty() && (r->manual || !r->installError.empty())) {
+    // A background check stays quiet; what it found is in the update state.
+    if (!text.empty() && r->manual) {
         js::Object t;
         t["t"] = "toast";
         t["text"] = text;
@@ -894,7 +939,8 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             if (wp == kUpdateTimer) {
                 SetTimer(hidden_, kUpdateTimer, kCheckEveryMs, nullptr);
-                if (settings_.autoUpdate) StartUpdateCheck(false);
+                // Always look; install only when automatic updates are on.
+                StartUpdateCheck(false, settings_.autoUpdate);
                 return 0;
             }
             break;
