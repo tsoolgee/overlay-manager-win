@@ -21,6 +21,10 @@ const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_UPDATE_DONE = WM_APP + 2;   // lParam: UpdateResult*, owned by the receiver
 const int kHotkeyId = 1;
 
+// Broadcast by Explorer when the taskbar is (re)created, e.g. after Explorer
+// crashed or was restarted: every tray icon has to be added again.
+const UINT WM_TASKBAR_CREATED = RegisterWindowMessageW(L"TaskbarCreated");
+
 // Update checks: shortly after start (not during it, so a slow network never
 // delays the overlays), then every few hours for a machine that stays on.
 const UINT_PTR kUpdateTimer = 1;
@@ -194,15 +198,19 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     wc.hInstance = inst_;
     wc.lpszClassName = kHiddenClass;
     RegisterClassW(&wc);
-    hidden_ = CreateWindowExW(0, kHiddenClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
-                              nullptr, inst_, this);
+    // A top-level window that is never shown, not a message-only one
+    // (HWND_MESSAGE): message-only windows receive no broadcasts, so
+    // WM_DISPLAYCHANGE, WM_ENDSESSION and TaskbarCreated would never arrive.
+    hidden_ = CreateWindowExW(WS_EX_TOOLWINDOW, kHiddenClass, kAppName, WS_POPUP, 0, 0, 0, 0,
+                              nullptr, nullptr, inst_, this);
     if (!hidden_) return false;
     SetWindowLongPtrW(hidden_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    // Run elevated, the app would otherwise never hear Explorer's broadcast.
+    ChangeWindowMessageFilterEx(hidden_, WM_TASKBAR_CREATED, MSGFLT_ALLOW, nullptr);
 
     OverlayWindow::RegisterWindowClass(inst_);
     ManagerWindow::RegisterWindowClass(inst_);
 
-    RegisterHotkey();
     if (settings_.showTrayIcon) CreateTrayIcon();
     RebuildOverlays();
 
@@ -222,6 +230,10 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
 
     if (!manager_->Create(settings_.lightTheme)) return false;
     if (!startMinimized) manager_->Show();
+
+    // After the manager exists: a clash with another program's hotkey is
+    // reported to the page, and Send() drops messages while there is no page.
+    RegisterHotkey();
 
     justUpdated_ = afterUpdate;
     CleanupAfterUpdate();
@@ -877,19 +889,21 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == kHotkeyId) SetAllHidden(!allHidden_);
             return 0;
 
-        case WM_DISPLAYCHANGE:
-        case WM_SETTINGCHANGE: {
+        case WM_DISPLAYCHANGE: {
             // A monitor was added, removed or rearranged. Re-read the layout and
             // move every overlay onto its target screen's new rectangle.
+            // A layer whose monitor is gone keeps its index: MonitorAt() shows
+            // it on the primary screen meanwhile, and it returns to its own
+            // screen when that is plugged back in, instead of the layout being
+            // rewritten (and saved) the moment a laptop leaves its dock.
             RefreshMonitors();
-            const int count = (int)Monitors().size();
-            for (auto& l : layers_)
-                if (l.monitor >= count) l.monitor = 0;
             for (auto& o : overlays_) o->Reposition();
-            for (size_t i = 0; i < overlays_.size(); ++i) SyncOverlay((int)i);
             SendInit();
             return 0;
         }
+
+        case WM_QUERYENDSESSION:
+            return TRUE;
 
         case WM_ENDSESSION:
             // Windows is shutting down; there is no second chance to write.
@@ -901,6 +915,14 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         default:
+            if (msg == WM_TASKBAR_CREATED && msg != 0) {
+                // Explorer restarted and forgot our icon; put it back. Remove
+                // first, so a broadcast that arrives while the icon is still
+                // there does not fail the add and leave it orphaned.
+                if (trayAdded_) RemoveTrayIcon();
+                if (settings_.showTrayIcon && CreateTrayIcon()) UpdateTrayIcon();
+                return 0;
+            }
             break;
     }
     return DefWindowProcW(hidden_, msg, wp, lp);
