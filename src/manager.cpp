@@ -10,6 +10,7 @@
 
 #include "model.h"
 #include "resource.h"
+#include "runtime.h"
 #include "util.h"
 
 using Microsoft::WRL::Callback;
@@ -70,6 +71,13 @@ UINT DpiFor(HWND hwnd) {
 
 int Scaled(int cssPixels, UINT dpi) { return MulDiv(cssPixels, (int)dpi, 96); }
 
+// Without this the window would just stay an empty frame.
+void ReportStartFailure(HWND owner, HRESULT hr) {
+    wchar_t what[96];
+    swprintf(what, 96, L"רכיב התצוגה של מיקרוסופט לא הצליח לעלות (קוד 0x%08lX).", (unsigned long)hr);
+    ReportRuntimeError(owner, what);
+}
+
 }  // namespace
 
 struct ManagerWindow::Impl {
@@ -78,14 +86,6 @@ struct ManagerWindow::Impl {
     bool ready = false;
     std::vector<std::string> queue;
 };
-
-bool WebView2Available() {
-    LPWSTR version = nullptr;
-    const HRESULT hr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
-    const bool ok = SUCCEEDED(hr) && version != nullptr;
-    if (version) CoTaskMemFree(version);
-    return ok;
-}
 
 void ManagerWindow::RegisterWindowClass(HINSTANCE inst) {
     WNDCLASSW wc{};
@@ -116,18 +116,14 @@ ManagerWindow::~ManagerWindow() {
 }
 
 bool ManagerWindow::Create(bool lightTheme) {
-    if (!WebView2Available()) {
-        const int answer = MessageBoxW(
-            nullptr,
-            L"הממשק של Floaty מבוסס על רכיב WebView2 של מיקרוסופט, "
-            L"והוא לא מותקן במחשב הזה.\n\n"
-            L"רוב מחשבי Windows 11 וגרסאות עדכניות של Windows 10 כוללים אותו כברירת מחדל.\n\n"
-            L"לפתוח את דף ההורדה של מיקרוסופט?",
-            kTitle, MB_ICONWARNING | MB_YESNO | MB_RTLREADING | MB_RIGHT);
-        if (answer == IDYES)
-            ShellExecuteW(nullptr, L"open",
-                          L"https://developer.microsoft.com/microsoft-edge/webview2/",
-                          nullptr, nullptr, SW_SHOWNORMAL);
+    const RuntimeChoice runtime = ChooseWebView2Runtime(nullptr);
+    if (runtime.source == RuntimeSource::Missing) {
+        ReportMissingRuntime(nullptr);
+        return false;
+    }
+    if (runtime.source == RuntimeSource::Failed) {
+        if (!runtime.error.empty())
+            ReportRuntimeError(nullptr, L"הכנת רכיב התצוגה נכשלה: " + runtime.error);
         return false;
     }
 
@@ -155,17 +151,24 @@ bool ManagerWindow::Create(bool lightTheme) {
     const std::wstring html = LoadUiHtml();
     const bool light = lightTheme;
 
-    CreateCoreWebView2EnvironmentWithOptions(
-        nullptr, UserDataFolder().c_str(), nullptr,
+    const HRESULT started = CreateCoreWebView2EnvironmentWithOptions(
+        runtime.folder.empty() ? nullptr : runtime.folder.c_str(), UserDataFolder().c_str(),
+        nullptr,
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [this, html, light](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
-                if (FAILED(hr) || !env) return hr;
+                if (FAILED(hr) || !env) {
+                    ReportStartFailure(hwnd_, hr);
+                    return hr;
+                }
                 env->CreateCoreWebView2Controller(
                     hwnd_,
                     Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                         [this, html, light](HRESULT hr2,
                                             ICoreWebView2Controller* ctrl) -> HRESULT {
-                            if (FAILED(hr2) || !ctrl) return hr2;
+                            if (FAILED(hr2) || !ctrl) {
+                                ReportStartFailure(hwnd_, hr2);
+                                return hr2;
+                            }
                             impl_->controller = ctrl;
                             ctrl->get_CoreWebView2(&impl_->webview);
                             if (!impl_->webview) return E_FAIL;
@@ -229,6 +232,7 @@ bool ManagerWindow::Create(bool lightTheme) {
                         }).Get());
                 return S_OK;
             }).Get());
+    if (FAILED(started)) ReportStartFailure(hwnd_, started);
 
     return true;
 }

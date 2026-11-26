@@ -52,7 +52,3 @@ private:
     MessageFn onMessage_;
     CloseFn onClose_;
 };
-
-// True when a WebView2 runtime is installed. Checked before creating the window
-// so the failure can be explained instead of appearing as a blank frame.
-bool WebView2Available();

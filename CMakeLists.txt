@@ -18,6 +18,7 @@ add_executable(Floaty WIN32
   src/json.cpp
   src/manager.cpp
   src/overlay.cpp
+  src/runtime.cpp
   src/updater.cpp
   src/util.cpp
   res/app.rc
