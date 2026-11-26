@@ -738,13 +738,13 @@ void App::OnUiMessage(const std::string& json) {
             l.width = bar.cx;
             l.height = bar.cy;
             l.rotation = 0;
-            if (!hadPicture) {  // its usual place: close to the top-left corner
-                l.anchorH = ANCHOR_LEFT;
-                l.anchorV = ANCHOR_TOP;
-                l.offsetX = 1.0;
-                l.offsetY = 1.0;
-                if (l.name.rfind(L"שכבה", 0) == 0) l.name = L"טיימר עמדה";
-            }
+            // Always its usual place, close to the top-left corner: where the
+            // layer's picture or sticker sat says nothing about the timer.
+            l.anchorH = ANCHOR_LEFT;
+            l.anchorV = ANCHOR_TOP;
+            l.offsetX = kTimerDefaultOffset;
+            l.offsetY = kTimerDefaultOffset;
+            if (!hadPicture && l.name.rfind(L"שכבה", 0) == 0) l.name = L"טיימר עמדה";
         }
         SyncOverlay(i);
         SaveConfig(settings_, layers_);
@@ -965,10 +965,15 @@ void App::SetLayerImage(int index, const std::wstring& image) {
     const bool hadPicture = !l.image.empty();
     // Still where the previous sticker goes by default (not moved since)?
     // Then the new one may take its own usual place too.
+    // (A timer still at its own usual place counts the same way.)
     double prevX = 0, prevY = 0;
-    const bool atStickerPlace = StickerDefaultPlace(l.image, prevX, prevY) &&
-                                l.anchorH == ANCHOR_LEFT && l.anchorV == ANCHOR_BOTTOM &&
-                                std::fabs(l.offsetX - prevX) < 0.05 && std::fabs(l.offsetY - prevY) < 0.05;
+    const bool atStickerPlace =
+        (StickerDefaultPlace(l.image, prevX, prevY) &&
+         l.anchorH == ANCHOR_LEFT && l.anchorV == ANCHOR_BOTTOM &&
+         std::fabs(l.offsetX - prevX) < 0.05 && std::fabs(l.offsetY - prevY) < 0.05) ||
+        (IsTimerImage(l.image) && l.anchorH == ANCHOR_LEFT && l.anchorV == ANCHOR_TOP &&
+         std::fabs(l.offsetX - kTimerDefaultOffset) < 0.05 &&
+         std::fabs(l.offsetY - kTimerDefaultOffset) < 0.05);
     l.image = image;
 
     // Fit the box to the new image's aspect ratio, keeping the current width.

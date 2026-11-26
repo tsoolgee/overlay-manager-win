@@ -22,6 +22,9 @@ inline bool IsTimerImage(const std::wstring& image) { return image == kTimerImag
 // What a new timer counts down from: 2:43:28, as the original program did.
 constexpr int kTimerDefaultStart = 9808;
 
+// Its usual place: this many percent from the top-left corner.
+constexpr double kTimerDefaultOffset = 1.0;
+
 namespace timerface {
 
 enum class Part { None, Exit, Printer, Account, Dots };
