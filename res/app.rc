@@ -18,6 +18,7 @@ IDR_STICKER_WIFREE RCDATA "stickers/wifree.png"
 IDR_STICKER_NETIV RCDATA "stickers/netiv.png"
 IDR_STICKER_VIDEOFF_LOGO RCDATA "stickers/videoff-logo.png"
 IDR_STICKER_VIDEOFF RCDATA "stickers/videoff.png"
+IDR_STICKER_HASINUN RCDATA "stickers/hasinun-hasofi.jpg"
 
 VS_VERSION_INFO VERSIONINFO
   FILEVERSION     FLOATY_VERSION_RC

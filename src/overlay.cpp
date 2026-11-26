@@ -228,6 +228,7 @@ const StickerDef kStickers[] = {
     {L"netiv", IDR_STICKER_NETIV, 200, true, 1.0, 6.5},
     {L"videoff-logo", IDR_STICKER_VIDEOFF_LOGO, 220, true, 0.0, 5.0},
     {L"videoff", IDR_STICKER_VIDEOFF, 270, true, 0.0, 5.0},
+    {L"הסינון הסופי", IDR_STICKER_HASINUN, 200, true, 0.0, 5.0},
 };
 const wchar_t kStickerPrefix[] = L"sticker:";
 }  // namespace

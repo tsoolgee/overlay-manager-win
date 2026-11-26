@@ -475,6 +475,10 @@ select {
 .stickers.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @container (min-width: 600px) { .stickers.four { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 #stickersDlg { width: min(640px, calc(100vw - 48px)); }
+.sticker.split { padding: 0; gap: 0; }
+.sticker.split .half { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 6px; }
+.sticker.split .half.more { flex: none; width: 52px; padding: 0; justify-content: center; border-inline-start: 1px solid var(--line-strong); color: var(--ink-2); }
+.sticker.split .half .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sticker-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
 .sticker-gallery .sticker { flex-direction: column; justify-content: center; height: auto; padding: 12px 8px 10px; gap: 8px; }
 .sticker-gallery .sticker img, .sticker-gallery .sticker .thumb { width: 72px; height: 72px; }
@@ -1251,7 +1255,7 @@ function renderEditor() {
           <div class="rows">
             <div class="file-row">
               ${timer ? `<div class="file-path placeholder"><span>טיימר עמדה מובנה</span></div>`
-                : stickerOf(l) ? `<div class="file-path placeholder"><span>מדבקה מובנית: <b class="ltr">${esc(stickerOf(l))}</b></span></div>`
+                : stickerOf(l) ? `<div class="file-path placeholder"><span>מדבקה מובנית: <bdi><b>${esc(stickerOf(l))}</b></bdi></span></div>`
                 : `<div class="file-path${l.image ? "" : " placeholder"}" title="${esc(l.image)}">${l.image ? esc(l.image) : "לא נבחרה תמונה"}</div>`}
               <button class="btn ${l.image ? "" : "primary"}" id="btnBrowse">${l.image && !stickerOf(l) && !timer ? "החלפה…" : "בחירת קובץ…"}</button>
             </div>
@@ -1269,8 +1273,14 @@ function renderEditor() {
                 // כשהשכבה כבר משתמשת באחת מהן, האריח מראה אותה ואת שמה.
                 const cur = state.moreStickers.includes(stickerOf(l)) ? stickerOf(l) : "";
                 const p = cur && previewFor({ image: "sticker:" + cur });
-                return `<button class="sticker" id="btnMoreStickers" data-current="${esc(cur)}" aria-pressed="${!!cur}" title="עוד מדבקות מוכנות" aria-haspopup="dialog">
-                  ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.grid}</span>`}<span${cur ? ' class="ltr"' : ""}>${cur ? esc(cur) : "מדבקות נוספות"}</span></button>`;
+                // אחרי בחירה הריבוע מתפצל: חצי למדבקה שנבחרה, חצי לסמל של "נוספות",
+                // כדי שלא ייעלם שיש שם עוד מדבקות.
+                return cur
+                  ? `<button class="sticker split" id="btnMoreStickers" data-current="${esc(cur)}" aria-pressed="true" title="מדבקות נוספות" aria-haspopup="dialog">
+                      <span class="half cur">${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.image}</span>`}<span class="name" dir="auto">${esc(cur)}</span></span>
+                      <span class="half more"><span class="thumb">${ICON.grid}</span></span></button>`
+                  : `<button class="sticker" id="btnMoreStickers" aria-pressed="false" title="מדבקות נוספות" aria-haspopup="dialog">
+                      <span class="thumb">${ICON.grid}</span><span>מדבקות נוספות</span></button>`;
               })() : ""}
             </div>` : ""}
             ${l.missing ? `<p class="note warn">${ICON.alert}${l.unreadable ? "לא ניתן לקרוא את הקובץ: הפורמט לא נתמך, או שהקובץ פגום." : "הקובץ לא נמצא בנתיב הזה. אולי הוא הוזז או נמחק — בחרו אותו מחדש."}</p>` : ""}
@@ -1524,7 +1534,7 @@ function openMoreStickers(idx) {
   $("stickerGallery").innerHTML = state.moreStickers.map((s) => {
     const p = previewFor({ image: "sticker:" + s });
     return `<button class="sticker" data-more="${esc(s)}" aria-pressed="${cur === s}">
-      ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.image}</span>`}<span class="ltr">${esc(s)}</span></button>`;
+      ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.image}</span>`}<span dir="auto">${esc(s)}</span></button>`;
   }).join("");
   state.moreStickers.forEach((s) => ensurePreview({ image: "sticker:" + s }));
   document.querySelectorAll("[data-more]").forEach((b) => b.addEventListener("click", () => {
@@ -1915,7 +1925,7 @@ function onMessage(m) {
       // תמונות המדבקות יושבות בכפתורים של העורך: מחליפים רק אותן, בלי לבנות מחדש.
       if ((m.key || "").startsWith("sticker:") && m.uri) {
         const name = CSS.escape(m.key.slice(8));
-        document.querySelectorAll(`[data-sticker="${name}"] .thumb, [data-more="${name}"] .thumb, [data-current="${name}"] .thumb`).forEach((old) => {
+        document.querySelectorAll(`[data-sticker="${name}"] .thumb, [data-more="${name}"] .thumb, [data-current="${name}"] .half.cur .thumb`).forEach((old) => {
           const img = document.createElement("img"); img.src = m.uri; img.alt = ""; old.replaceWith(img);
         });
       }
