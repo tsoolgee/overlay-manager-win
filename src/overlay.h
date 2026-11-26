@@ -88,6 +88,8 @@ private:
     Grab grab_ = Grab::None;
     POINT grabOrigin_{};
     RECT grabRect_{};
+    SIZE grabSize_{};     // the layer's own size when the grab began
+    SIZE grabExtent_{};   // its window (the rotated bounding box) at that moment
 };
 
 // Starts and stops GDI+ for the process.

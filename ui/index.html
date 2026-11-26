@@ -638,6 +638,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 2px solid var
 .preview-facts dd[dir="auto"] { direction: unset; }
 
 .preview-card .btn { justify-content: center; }
+.pos-hint { font-size: 12.5px; color: var(--ink-2); }
+.pos-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 /* ---------- מצב ריק ---------- */
 .empty {
@@ -1206,10 +1208,16 @@ function renderEditor() {
         <dt>מסך</dt><dd>${mon.width}×${mon.height}</dd>
         <dt>גודל</dt><dd>${l.width}×${l.height} px</dd>
       </dl>
-      <button class="btn ${inPos ? "on" : ""}" id="btnPosition">
+      ${inPos ? `
+      <p class="pos-hint">גררו את השכבה על המסך, או את הפינה שלה כדי לשנות גודל.</p>
+      <div class="pos-actions">
+        <button class="btn primary" id="btnPosDone" title="Enter">שמור מיקום</button>
+        <button class="btn" id="btnPosCancel" title="Esc">ביטול</button>
+      </div>` : `
+      <button class="btn" id="btnPosition">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 9V5h4M15 5h4v4M19 15v4h-4M9 19H5v-4"/></svg>
-        ${inPos ? "סיום מיקום (לחצו כשסיימתם)" : "מקם בגרירה על המסך"}
-      </button>
+        מקם בגרירה על המסך
+      </button>`}
     </div>
   </div>`;
 
@@ -1330,11 +1338,14 @@ function wireEditor(l) {
 
   $("btnBrowse").addEventListener("click", () => send({ c: "browse", i: idx }));
   $("btnColor").addEventListener("click", () => send({ c: "color", i: idx }));
-  $("btnPosition").addEventListener("click", () => {
-    const on = state.positionIndex !== idx;
-    send({ c: "position", i: idx, on });
-  });
+  if ($("btnPosition")) $("btnPosition").addEventListener("click", () => send({ c: "position", i: idx, on: true }));
+  if ($("btnPosDone")) $("btnPosDone").addEventListener("click", finishPosition);
+  if ($("btnPosCancel")) $("btnPosCancel").addEventListener("click", cancelPosition);
 }
+
+// סיום מצב המיקום: שמירה של מה שנגרר, או חזרה למיקום ולגודל שהיו לפניו.
+function finishPosition() { send({ c: "position", i: state.positionIndex, on: false }); }
+function cancelPosition() { send({ c: "position", i: state.positionIndex, on: false, cancel: true }); }
 
 // ---------------------------------------------------------------------------
 // שינוי נתונים
@@ -1452,6 +1463,11 @@ function applyUpdate() {
 
 document.addEventListener("keydown", (e) => {
   if (e.ctrlKey && (e.key === "s" || e.key === "S")) { e.preventDefault(); send({ c: "save" }); return; }
+  // במצב מיקום: Esc מבטל ו-Enter שומר, גם כשהמיקוד בשדה (Enter בשדה נשאר שלו).
+  if (state.positionIndex >= 0 && !$("settingsDlg").open) {
+    if (e.key === "Escape") { e.preventDefault(); cancelPosition(); return; }
+    if (e.key === "Enter" && !e.target.matches("input, select, textarea, button")) { e.preventDefault(); finishPosition(); return; }
+  }
   if (e.target.matches("input, select, textarea")) return;
   if (e.key === "Delete" && state.selected >= 0) { $("btnDel").click(); return; }
   if (e.key === "ArrowDown" && state.selected < state.layers.length - 1) { e.preventDefault(); select(state.selected + 1); }

@@ -629,6 +629,8 @@ LRESULT OverlayWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             const int h = grabRect_.bottom - grabRect_.top;
             grab_ = (pt.x >= w - kGripSize && pt.y >= h - kGripSize) ? Grab::Resize
                                                                     : Grab::Move;
+            grabSize_ = SIZE{std::max(kMinSide, layer_.width), std::max(kMinSide, layer_.height)};
+            grabExtent_ = SIZE{std::max(1, w), std::max(1, h)};
             GetCursorPos(&grabOrigin_);
             SetCapture(hwnd_);
             return 0;
@@ -676,16 +678,17 @@ LRESULT OverlayWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 layer_.offsetX = mon.width ? ox * 100.0 / mon.width : 0;
                 layer_.offsetY = mon.height ? oy * 100.0 / mon.height : 0;
             } else {
-                // RECT members are LONG; narrow explicitly so std::max has one
-                // type to work with.
-                int nw = std::max(kMinSide, (int)(grabRect_.right - grabRect_.left) + dx);
-                int nh = std::max(kMinSide, (int)(grabRect_.bottom - grabRect_.top) + dy);
-                if (layer_.lockAspect && layer_.width > 0 && layer_.height > 0) {
-                    const double ratio = (double)layer_.height / layer_.width;
-                    nh = std::max(kMinSide, (int)std::lround(nw * ratio));
-                }
-                layer_.width = nw;
-                layer_.height = nh;
+                // Scale the size the layer had when the grab began by how far
+                // the grip moved. The window is the rotated bounding box, so
+                // taking its width as the layer's width (as this used to) grew
+                // a rotated layer on every drag; and working from the grab-time
+                // size keeps a locked aspect ratio from drifting through
+                // repeated rounding.
+                const double sx = (double)(grabExtent_.cx + dx) / grabExtent_.cx;
+                const double sy = (double)(grabExtent_.cy + dy) / grabExtent_.cy;
+                layer_.width = std::max(kMinSide, (int)std::lround(grabSize_.cx * sx));
+                layer_.height = std::max(kMinSide,
+                                         (int)std::lround(grabSize_.cy * (layer_.lockAspect ? sx : sy)));
             }
 
             Render();
@@ -700,6 +703,13 @@ LRESULT OverlayWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 grab_ = Grab::None;
                 ReleaseCapture();
             }
+            return 0;
+
+        case WM_CAPTURECHANGED:
+            // The capture went elsewhere mid-drag (a window popped up, the user
+            // switched away): the button-up will not come here, so stop now
+            // rather than keep dragging on plain mouse moves afterwards.
+            grab_ = Grab::None;
             return 0;
 
         case WM_SETCURSOR:

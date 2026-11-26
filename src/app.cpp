@@ -202,6 +202,9 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     manager_ = std::make_unique<ManagerWindow>(
         inst_, [this](const std::string& json) { OnUiMessage(json); },
         [this] {
+            // Positioning is driven from this window; left on, the layer would
+            // stay a grabbable, click-blocking box with nothing to end it.
+            if (positionIndex_ >= 0) SetPositionMode(positionIndex_, false);
             // Closing the window keeps the overlays running, unless there is no
             // tray icon to get back in through.
             if (settings_.minimizeToTray && settings_.showTrayIcon)
@@ -273,11 +276,18 @@ void App::SetAllHidden(bool hidden) {
 void App::SetPositionMode(int index, bool on) {
     // Only one layer at a time is draggable, otherwise the scrims stack up and
     // the wrong one takes the click.
+    const int previous = positionIndex_;
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
         overlays_[positionIndex_]->SetPositionMode(false);
 
     positionIndex_ = on ? index : -1;
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size()) {
+        // What "Cancel" goes back to: the layer as it was, and whether
+        // everything was hidden, before positioning switched those on.
+        if (positionIndex_ != previous) {
+            positionBackup_ = layers_[positionIndex_];
+            positionWasHidden_ = allHidden_;
+        }
         overlays_[positionIndex_]->SetPositionMode(true);
         // A hidden or disabled layer cannot be dragged, so make it visible for
         // the duration instead of leaving the user clicking at nothing.
@@ -292,6 +302,36 @@ void App::SetPositionMode(int index, bool on) {
     js::Object m;
     m["t"] = "positionMode";
     m["on"] = on;
+    m["i"] = index;
+    Send(js::Value(std::move(m)).dump());
+}
+
+void App::CancelPositionMode() {
+    const int i = positionIndex_;
+    if (i < 0 || i >= (int)layers_.size()) return;
+    // Put back where, how big and whether it was shown; any other edit made
+    // meanwhile (opacity, tint...) came from the editor and stays.
+    Layer& l = layers_[i];
+    l.offsetX = positionBackup_.offsetX;
+    l.offsetY = positionBackup_.offsetY;
+    l.width = positionBackup_.width;
+    l.height = positionBackup_.height;
+    l.enabled = positionBackup_.enabled;
+    SetPositionMode(i, false);
+    SyncOverlay(i);
+    if (positionWasHidden_) SetAllHidden(true);
+    SendLayers(selected_);
+}
+
+void App::RemapPositionIndex(int index) {
+    // Rows above the positioned layer came or went: follow the same layer to
+    // its new index, or leave position mode if it was the one removed. The
+    // page is told, since it marks the layer by index.
+    if (index == positionIndex_) return;
+    positionIndex_ = index;
+    js::Object m;
+    m["t"] = "positionMode";
+    m["on"] = index >= 0;
     m["i"] = index;
     Send(js::Value(std::move(m)).dump());
 }
@@ -417,6 +457,7 @@ void App::OnUiMessage(const std::string& json) {
         copy.offsetY += 2.0;
         layers_.insert(layers_.begin() + i + 1, copy);
         selected_ = i + 1;
+        if (positionIndex_ > i) RemapPositionIndex(positionIndex_ + 1);
         RebuildOverlays();
         SendLayers(selected_);
         return;
@@ -430,7 +471,10 @@ void App::OnUiMessage(const std::string& json) {
                         kAppName, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
             return;
         layers_.erase(layers_.begin() + i);
-        if (positionIndex_ == i) positionIndex_ = -1;
+        if (positionIndex_ == i)
+            RemapPositionIndex(-1);
+        else if (positionIndex_ > i)
+            RemapPositionIndex(positionIndex_ - 1);
         selected_ = layers_.empty() ? -1 : std::min(i, (int)layers_.size() - 1);
         RebuildOverlays();
         SendLayers(selected_);
@@ -447,6 +491,13 @@ void App::OnUiMessage(const std::string& json) {
         layers_.erase(layers_.begin() + from);
         layers_.insert(layers_.begin() + to, l);
         selected_ = to;
+        const int pos = positionIndex_;
+        if (pos == from)
+            RemapPositionIndex(to);
+        else if (from < pos && pos <= to)
+            RemapPositionIndex(pos - 1);
+        else if (to <= pos && pos < from)
+            RemapPositionIndex(pos + 1);
         RebuildOverlays();
         SendLayers(selected_);
         return;
@@ -468,7 +519,11 @@ void App::OnUiMessage(const std::string& json) {
     }
 
     if (cmd == "position") {
-        if (valid) SetPositionMode(i, msg["on"].asBool(true));
+        if (!valid) return;
+        if (msg["cancel"].asBool(false))
+            CancelPositionMode();
+        else
+            SetPositionMode(i, msg["on"].asBool(true));
         return;
     }
 

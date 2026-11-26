@@ -33,6 +33,8 @@ private:
     void SyncOverlay(int index);
     void SetAllHidden(bool hidden);
     void SetPositionMode(int index, bool on);
+    void CancelPositionMode();
+    void RemapPositionIndex(int index);
 
     // --- shell integration ---
     bool CreateTrayIcon();
@@ -65,6 +67,8 @@ private:
     std::vector<std::unique_ptr<OverlayWindow>> overlays_;
     int selected_ = -1;
     int positionIndex_ = -1;
+    Layer positionBackup_;          // the positioned layer before it was moved
+    bool positionWasHidden_ = false;
     bool allHidden_ = false;
     bool trayAdded_ = false;
     bool quitting_ = false;
