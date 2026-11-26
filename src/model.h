@@ -46,6 +46,14 @@ struct Layer {
     // settings. Counted only while it is enabled, has a picture and
     // "hide all" is off.
     double usageSeconds = 0.0;
+
+    // The kiosk timer (image "widget:timer", see timer.h): what "reset" goes
+    // back to, the time left, the time used, and the switches in its menu.
+    int timerStart = 9808;
+    double timerRemaining = 9808;
+    double timerUsed = 0.0;
+    bool timerRunning = true;
+    bool timerLocked = false;
 };
 
 struct Settings {

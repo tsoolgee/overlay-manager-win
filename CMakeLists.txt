@@ -19,6 +19,7 @@ add_executable(Floaty WIN32
   src/manager.cpp
   src/overlay.cpp
   src/runtime.cpp
+  src/timer.cpp
   src/updater.cpp
   src/util.cpp
   res/app.rc

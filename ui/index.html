@@ -435,6 +435,20 @@ select {
 .lock[aria-pressed="true"] { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
 
 .file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+/* טיימר העמדה: שכבה מצוירת, אז מה שנוגע לתמונה (גודל, סיבוב, צבע) לא חל עליו */
+.is-timer .not-timer { display: none !important; }
+.timer-now { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.timer-now > div { background: var(--surface-2, var(--hover)); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; }
+.timer-now .k { font-size: 12.5px; color: var(--muted); }
+.timer-now .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.timer-now .v.dim { color: var(--muted); font-weight: 600; }
+.timer-now .v.zero { color: var(--danger, #e5484d); }
+.inline { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.inline input { font-variant-numeric: tabular-nums; text-align: center; }
+.inline input.bad { border-color: var(--danger, #e5484d); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips .sep { width: 1px; background: var(--line); margin: 2px 4px; }
+.timer-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .file-path {
   height: 36px;
   display: flex; align-items: center;
@@ -976,7 +990,26 @@ const displayOrder = () => state.layers.map((_, i) => i).reverse();
 // ---------------------------------------------------------------------------
 // רשימת השכבות
 // ---------------------------------------------------------------------------
+// טיימר העמדה: שכבה מובנית שמצוירת בתוכנה, לא תמונה.
+const TIMER = "widget:timer";
+const isTimer = (l) => !!l && l.image === TIMER;
+function fmtHms(sec) {
+  const t = Math.max(0, Math.floor(+sec || 0));
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(Math.floor(t / 3600))}:${p(Math.floor(t % 3600 / 60))}:${p(t % 60)}`;
+}
+// "2" = שעתיים, "2:30" = שעתיים וחצי, "2:30:15"; גם נקודה במקום נקודתיים.
+function parseHms(text) {
+  const parts = String(text).trim().replace(/\./g, ":").split(":").filter((x) => x !== "");
+  if (!parts.length || parts.length > 3 || !parts.every((x) => /^\d{1,6}$/.test(x))) return null;
+  while (parts.length < 3) parts.push("0");
+  const [h, m, s] = parts.map(Number);
+  const total = h * 3600 + m * 60 + s;
+  return total > 999 * 3600 ? null : total;
+}
+
 function rowSub(l) {
+  if (isTimer(l)) return `טיימר עמדה · <span class="ltr">${fmtHms(l.timer ? l.timer.remaining : 0)}</span>`;
   if (l.missing) return `<span class="warn">${l.unreadable ? "לא ניתן לקרוא את הקובץ" : "הקובץ לא נמצא"}</span>`;
   if (!l.image) return "עוד לא נבחרה תמונה";
   return `<span class="ltr">${l.width}×${l.height}</span> · ${esc(monitorName(l.monitor))} · ${pct(l.opacity)}%`;
@@ -1099,8 +1132,10 @@ function renderEditor() {
     `<option value="${i}" ${i === l.monitor ? "selected" : ""}>${esc(m.label)}</option>`).join("") +
     (state.monitors[l.monitor] ? "" : `<option value="${l.monitor}" selected>${esc(monitorName(l.monitor))}</option>`);
 
+  const timer = isTimer(l);
+  const t = l.timer || { start: 0, remaining: 0, used: 0, running: true, locked: false };
   host.innerHTML = `
-  <div class="editor-inner">
+  <div class="editor-inner${timer ? " is-timer" : ""}">
     ${state.positionIndex >= 0 ? `
     <div class="pos-bar" role="status">
       <span class="text"><b>מצב מיקום:</b> גררו את השכבה על המסך כדי להזיז אותה, ואת הפינה שלה כדי לשנות גודל.
@@ -1116,14 +1151,51 @@ function renderEditor() {
 
     <div class="editor-layout">
       <div class="col">
+        ${timer ? `
+        <section class="card">
+          <h3>טיימר עמדה</h3>
+          <p class="desc">ריחוף מעל הטיימר פותח אותו, ולחיצה ימנית עליו פותחת את התפריט שלו. הכפתורים שעליו הם לקישוט בלבד.</p>
+          <div class="timer-now">
+            <div><span class="k">זמן שנשאר</span><span class="v ltr${t.remaining > 0 ? "" : " zero"}" id="tRemain">${fmtHms(t.remaining)}</span></div>
+            <div><span class="k">זמן שימוש</span><span class="v dim ltr" id="tUsed">${fmtHms(t.used)}</span></div>
+          </div>
+          <div class="rows">
+            <div class="field">
+              <label class="label" for="tSet">קביעת זמן</label>
+              <div class="inline"><input type="text" id="tSet" dir="ltr" value="${fmtHms(t.remaining)}" title="שעות:דקות:שניות"><button class="btn" id="btnTSet">קביעה</button></div>
+            </div>
+            <div class="field">
+              <span class="label">הוספת דקות</span>
+              <div class="chips">${[1, 5, 10, 15, 30, 60].map((m) => `<button class="btn small" data-add="${m}"><span class="ltr">+${m}</span></button>`).join("")}</div>
+            </div>
+            <div class="field">
+              <span class="label">הפחתת דקות</span>
+              <div class="chips">${[1, 5, 10].map((m) => `<button class="btn small" data-add="-${m}"><span class="ltr">−${m}</span></button>`).join("")}</div>
+            </div>
+            <div class="field">
+              <label class="label" for="tStart">זמן התחלה</label>
+              <div class="inline"><input type="text" id="tStart" dir="ltr" value="${fmtHms(t.start)}" title="שעות:דקות:שניות. האיפוס חוזר אליו"><button class="btn" id="btnTStart">שמירה ואיפוס</button></div>
+            </div>
+            <div class="field">
+              <span class="label"></span>
+              <div class="timer-actions">
+                <button class="btn" id="btnTPause">${t.running ? "השהיה" : "המשך"}</button>
+                <button class="btn" id="btnTReset">איפוס</button>
+              </div>
+            </div>
+            <label class="check"><input type="checkbox" id="tLock" ${t.locked ? "checked" : ""}><span class="box">${ICON.check}</span>
+              <span>נעילת מיקום<small>הטיימר לא זז כשגוררים אותו.</small></span></label>
+          </div>
+        </section>` : ""}
         <section class="card">
           <h3>תמונה</h3>
           <p class="desc">PNG עם רקע שקוף נראה הכי טוב. גם JPG, BMP, GIF ו-WebP עובדים.</p>
           <div class="rows">
             <div class="file-row">
-              ${stickerOf(l) ? `<div class="file-path placeholder"><span>מדבקה מובנית: <b class="ltr">${esc(stickerOf(l))}</b></span></div>`
+              ${timer ? `<div class="file-path placeholder"><span>טיימר עמדה מובנה</span></div>`
+                : stickerOf(l) ? `<div class="file-path placeholder"><span>מדבקה מובנית: <b class="ltr">${esc(stickerOf(l))}</b></span></div>`
                 : `<div class="file-path${l.image ? "" : " placeholder"}" title="${esc(l.image)}">${l.image ? esc(l.image) : "לא נבחרה תמונה"}</div>`}
-              <button class="btn ${l.image ? "" : "primary"}" id="btnBrowse">${l.image && !stickerOf(l) ? "החלפה…" : "בחירת קובץ…"}</button>
+              <button class="btn ${l.image ? "" : "primary"}" id="btnBrowse">${l.image && !stickerOf(l) && !timer ? "החלפה…" : "בחירת קובץ…"}</button>
             </div>
             ${state.stickers.length ? `
             <div class="stickers" role="group" aria-label="מדבקות מובנות">
@@ -1133,13 +1205,15 @@ function renderEditor() {
                 return `<button class="sticker" data-sticker="${esc(s)}" aria-pressed="${stickerOf(l) === s}">
                   ${p ? `<img src="${p}" alt="">` : `<span class="thumb">${ICON.image}</span>`}<span class="ltr">${esc(s)}</span></button>`;
               }).join("")}
+              <button class="sticker" data-widget="timer" aria-pressed="${timer}" title="טיימר שסופר את זמן העמדה">
+                ${previewFor({ image: TIMER }) ? `<img src="${previewFor({ image: TIMER })}" alt="" style="width:auto;max-width:72px">` : `<span class="thumb">${ICON.image}</span>`}<span>טיימר עמדה</span></button>
             </div>` : ""}
             ${l.missing ? `<p class="note warn">${ICON.alert}${l.unreadable ? "לא ניתן לקרוא את הקובץ: הפורמט לא נתמך, או שהקובץ פגום." : "הקובץ לא נמצא בנתיב הזה. אולי הוא הוזז או נמחק — בחרו אותו מחדש."}</p>` : ""}
-            <label class="check" title="לתמונה שנשמרה עם ריבוע לבן או צבעוני מסביב">
+            <label class="check not-timer" title="לתמונה שנשמרה עם ריבוע לבן או צבעוני מסביב">
               <input type="checkbox" id="fRemoveBg" ${l.removeBg ? "checked" : ""}><span class="box">${ICON.check}</span>
               <span>הסרת רקע אחיד<small>הופך לשקוף את צבע הרקע שמסביב לתמונה. אותו צבע בתוך הלוגו נשמר.</small></span>
             </label>
-            ${l.removeBg ? `
+            ${l.removeBg && !timer ? `
             <div class="field">
               <label class="label" for="fBgTol">רגישות</label>
               <div class="range no-reset"><input type="range" id="fBgTol" min="1" max="100" step="1" value="${l.bgTolerance}"><output id="outBgTol">${l.bgTolerance}</output></div>
@@ -1151,7 +1225,7 @@ function renderEditor() {
           <h3>גודל ומיקום</h3>
           <p class="desc">המיקום נשמר באחוזים מהמסך, ולכן הוא נשאר נכון גם כשמשנים רזולוציה.</p>
           <div class="rows">
-            <div class="field">
+            <div class="field not-timer">
               <span class="label">גודל</span>
               <div class="size-grid">
                 <label class="captioned"><span>רוחב</span><span class="num"><input type="number" id="fWidth" value="${l.width}" min="16" max="20000" step="1"><span class="u">px</span></span></label>
@@ -1189,10 +1263,10 @@ function renderEditor() {
           <h3>על המסך</h3>
           <div class="screen" id="screen" style="aspect-ratio:${mon.width}/${mon.height}"><div class="taskbar"></div></div>
           <dl class="facts">
-            <dt>${stickerOf(l) ? "מדבקה" : "קובץ"}</dt><dd dir="auto">${l.image ? esc(stickerOf(l) || baseName(l.image)) : "—"}</dd>
+            <dt>${timer ? "סוג" : stickerOf(l) ? "מדבקה" : "קובץ"}</dt><dd dir="auto">${timer ? "טיימר עמדה" : l.image ? esc(stickerOf(l) || baseName(l.image)) : "—"}</dd>
             <dt>מסך</dt><dd><span class="ltr">${mon.width}×${mon.height}</span></dd>
           </dl>
-          ${inPos ? "" : `<button class="btn" id="btnPosition">${ICON.move}מיקום בגרירה על המסך</button>`}
+          ${timer ? `<p class="note">את הטיימר גוררים ישירות על המסך.</p>` : inPos ? "" : `<button class="btn" id="btnPosition">${ICON.move}מיקום בגרירה על המסך</button>`}
         </section>
 
         <section class="card">
@@ -1202,12 +1276,12 @@ function renderEditor() {
               <label class="label" for="fOpacity">אטימות</label>
               <div class="range no-reset"><input type="range" id="fOpacity" min="0" max="255" step="1" value="${l.opacity}"><output id="outOpacity">${pct(l.opacity)}%</output></div>
             </div>
-            <div class="field">
+            <div class="field not-timer">
               <label class="label" for="fRot">סיבוב</label>
               <div class="range"><input type="range" id="fRot" min="-180" max="180" step="1" value="${l.rotation}"><output id="outRot">${(+l.rotation).toFixed(0)}°</output>
                 <button class="btn small" id="btnRot0" ${l.rotation ? "" : "disabled"} title="מחזיר את השכבה לישר">ישר</button></div>
             </div>
-            <div class="field">
+            <div class="field not-timer">
               <span class="label">צבע</span>
               <div class="swatch-row">
                 <label class="check"><input type="checkbox" id="fTint" ${l.useTint ? "checked" : ""}><span class="box">${ICON.check}</span><span>צביעה בגוון</span></label>
@@ -1215,14 +1289,14 @@ function renderEditor() {
                 <span class="hexcode">${hex(l).toUpperCase()}</span>
               </div>
             </div>
-            <div class="field">
+            <div class="field not-timer">
               <span class="label"></span>
               <label class="check"><input type="checkbox" id="fGray" ${l.grayscale ? "checked" : ""}><span class="box">${ICON.check}</span><span>שחור-לבן</span></label>
             </div>
           </div>
         </section>
 
-        <section class="card">
+        <section class="card not-timer">
           <h3>התנהגות</h3>
           <label class="check"><input type="checkbox" id="fClick" ${l.clickThrough ? "checked" : ""}><span class="box">${ICON.check}</span>
             <span>לחיצות עוברות דרך השכבה<small>אפשר ללחוץ על מה שמתחתיה כאילו היא לא שם. כבוי: השכבה חוסמת את המקום שהיא מכסה.</small></span></label>
@@ -1363,6 +1437,28 @@ function wireEditor(l) {
   $("fClick").addEventListener("change", (e) => patch(idx, { clickThrough: e.target.checked }));
 
   $("btnBrowse").addEventListener("click", () => { send({ c: "browse", i: idx }); scheduleSave(); });
+  document.querySelectorAll("[data-widget]").forEach((b) => b.addEventListener("click", () => {
+    send({ c: "widget", i: idx, name: b.dataset.widget });
+  }));
+  if ($("tSet")) {
+    const apply = (op, id) => {
+      const input = $(id);
+      const v = parseHms(input.value);
+      if (v == null) { input.classList.add("bad"); input.focus(); input.select(); toast("כותבים שעות:דקות:שניות, למשל 1:30:00", true); return; }
+      input.classList.remove("bad");
+      send({ c: "timer", i: idx, op, value: v });
+    };
+    $("btnTSet").addEventListener("click", () => apply("set", "tSet"));
+    $("tSet").addEventListener("keydown", (e) => { if (e.key === "Enter") apply("set", "tSet"); });
+    $("btnTStart").addEventListener("click", () => apply("start", "tStart"));
+    $("tStart").addEventListener("keydown", (e) => { if (e.key === "Enter") apply("start", "tStart"); });
+    document.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () =>
+      send({ c: "timer", i: idx, op: "add", value: +b.dataset.add })));
+    $("btnTReset").addEventListener("click", () => send({ c: "timer", i: idx, op: "reset" }));
+    $("btnTPause").addEventListener("click", () =>
+      send({ c: "timer", i: idx, op: "running", value: !(state.layers[idx].timer || {}).running }));
+    $("tLock").addEventListener("change", (e) => send({ c: "timer", i: idx, op: "locked", value: e.target.checked }));
+  }
   document.querySelectorAll("[data-sticker]").forEach((b) => b.addEventListener("click", () => {
     send({ c: "sticker", i: idx, name: b.dataset.sticker });
     scheduleSave();
@@ -1725,6 +1821,7 @@ function onMessage(m) {
       state.stickers = m.stickers || [];
       // התמונות הממוזערות של המדבקות, פעם אחת, לפני שהעורך נבנה.
       state.stickers.forEach((s) => ensurePreview({ image: "sticker:" + s }));
+      ensurePreview({ image: TIMER });
       $("appVersion").textContent = m.version || "—";
       applySettings();
       applyHidden();
@@ -1778,6 +1875,20 @@ function onMessage(m) {
     case "stats":
       renderStats(m);
       break;
+
+    case "timer": {
+      // פעם בשנייה, כשהחלון פתוח: השעון בעורך ובשורה ברשימה.
+      const l = state.layers[m.i];
+      if (!l || !l.timer) break;
+      Object.assign(l.timer, { remaining: m.remaining, used: m.used, running: m.running });
+      if (m.i === state.selected && $("tRemain")) {
+        $("tRemain").textContent = fmtHms(m.remaining);
+        $("tRemain").classList.toggle("zero", !(m.remaining >= 1));
+        $("tUsed").textContent = fmtHms(m.used);
+      }
+      refreshRow(m.i);
+      break;
+    }
 
     case "update":
       state.update = {

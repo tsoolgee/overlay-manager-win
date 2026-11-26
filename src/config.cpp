@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -132,6 +133,11 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
         l.removeBg     = GetInt(s, L"RemoveBg", 0, path) != 0;
         l.bgTolerance  = GetInt(s, L"BgTolerance", 25, path);
         l.usageSeconds = GetDouble(s, L"UsageSeconds", 0.0, path);
+        l.timerStart     = std::max(0, GetInt(s, L"TimerStart", l.timerStart, path));
+        l.timerRemaining = std::max(0.0, GetDouble(s, L"TimerRemaining", l.timerStart, path));
+        l.timerUsed      = std::max(0.0, GetDouble(s, L"TimerUsed", 0.0, path));
+        l.timerRunning   = GetInt(s, L"TimerRunning", 1, path) != 0;
+        l.timerLocked    = GetInt(s, L"TimerLocked", 0, path) != 0;
         layers.push_back(std::move(l));
     }
     return true;
@@ -182,6 +188,13 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
         PutInt(text, L"RemoveBg", l.removeBg ? 1 : 0);
         PutInt(text, L"BgTolerance", l.bgTolerance);
         PutInt(text, L"UsageSeconds", (long long)l.usageSeconds);
+        if (l.image == L"widget:timer") {
+            PutInt(text, L"TimerStart", l.timerStart);
+            PutInt(text, L"TimerRemaining", (long long)l.timerRemaining);
+            PutInt(text, L"TimerUsed", (long long)l.timerUsed);
+            PutInt(text, L"TimerRunning", l.timerRunning ? 1 : 0);
+            PutInt(text, L"TimerLocked", l.timerLocked ? 1 : 0);
+        }
     }
 
     const std::wstring path = ConfigPath();

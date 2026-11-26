@@ -8,6 +8,7 @@
 
 #include "json.h"
 #include "resource.h"
+#include "timer.h"
 #include "updater.h"
 #include "util.h"
 
@@ -101,6 +102,15 @@ js::Value LayerToJson(const Layer& l) {
     o["grayscale"] = l.grayscale;
     o["removeBg"] = l.removeBg;
     o["bgTolerance"] = l.bgTolerance;
+    if (IsTimerImage(l.image)) {
+        js::Object t;
+        t["start"] = l.timerStart;
+        t["remaining"] = l.timerRemaining;
+        t["used"] = l.timerUsed;
+        t["running"] = l.timerRunning;
+        t["locked"] = l.timerLocked;
+        o["timer"] = js::Value(std::move(t));
+    }
 
     // Native pixel size, so the aspect lock in the UI uses the real ratio
     // rather than whatever the box happens to be set to right now.
@@ -340,7 +350,23 @@ void App::RebuildOverlays() {
                 l.width = g.width;
                 l.height = g.height;
                 SendLayers(selected_);
-            }));
+            },
+            TimerHooks{
+                [this](int index, const Layer& t, bool save) { OnTimerChanged(index, t, save); },
+                [this] { return settings_.autoStart; },
+                [this] {
+                    SetAutoStartEnabled(!settings_.autoStart);
+                    settings_.autoStart = IsAutoStartEnabled();
+                    SaveConfig(settings_, layers_);
+                    SendSettings();
+                },
+                [this](int index) {
+                    if (index >= 0 && index < (int)layers_.size()) {
+                        selected_ = index;
+                        SendLayers(selected_);
+                    }
+                    ShowManager();
+                }}));
         overlays_.back()->SetHiddenByHotkey(allHidden_);
     }
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
@@ -358,6 +384,32 @@ void App::RestackOverlays() {
     // later layer would cover it.
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
         SetWindowPos(overlays_[positionIndex_]->Hwnd(), HWND_TOPMOST, 0, 0, 0, 0, flags);
+}
+
+void App::OnTimerChanged(int index, const Layer& t, bool save) {
+    if (index < 0 || index >= (int)layers_.size()) return;
+    Layer& l = layers_[index];
+    if (!IsTimerImage(l.image)) return;
+    l.timerStart = t.timerStart;
+    l.timerRemaining = t.timerRemaining;
+    l.timerUsed = t.timerUsed;
+    l.timerRunning = t.timerRunning;
+    l.timerLocked = t.timerLocked;
+    l.offsetX = t.offsetX;
+    l.offsetY = t.offsetY;
+    if (save) {
+        SaveConfig(settings_, layers_);
+        SendLayers(selected_);
+    } else if (manager_ && manager_->IsVisible()) {
+        // Once a second, for the clock in the editor.
+        js::Object m;
+        m["t"] = "timer";
+        m["i"] = index;
+        m["remaining"] = l.timerRemaining;
+        m["used"] = l.timerUsed;
+        m["running"] = l.timerRunning;
+        Send(js::Value(std::move(m)).dump());
+    }
 }
 
 void App::SyncOverlay(int index) {
@@ -664,6 +716,66 @@ void App::OnUiMessage(const std::string& json) {
         const auto names = StickerNames();
         if (valid && std::find(names.begin(), names.end(), name) != names.end())
             SetLayerImage(i, StickerPath(name));
+        return;
+    }
+
+    if (cmd == "widget") {
+        // The kiosk timer, the one built-in layer that is drawn, not a picture.
+        if (!valid || msg["name"].asString() != "timer") return;
+        Layer& l = layers_[i];
+        if (!IsTimerImage(l.image)) {
+            const bool hadPicture = !l.image.empty();
+            l.image = kTimerImage;
+            l.timerStart = kTimerDefaultStart;
+            l.timerRemaining = kTimerDefaultStart;
+            l.timerUsed = 0;
+            l.timerRunning = true;
+            l.timerLocked = false;
+            const SIZE bar = timerface::Size(false, 1.0);  // for the previews
+            l.width = bar.cx;
+            l.height = bar.cy;
+            l.rotation = 0;
+            if (!hadPicture) {  // its usual place: the top-left corner
+                l.anchorH = ANCHOR_LEFT;
+                l.anchorV = ANCHOR_TOP;
+                l.offsetX = 5.0;
+                l.offsetY = 5.0;
+                if (l.name.rfind(L"שכבה", 0) == 0) l.name = L"טיימר עמדה";
+            }
+        }
+        SyncOverlay(i);
+        SaveConfig(settings_, layers_);
+        SendPreview(l.image, 0);
+        SendLayers(selected_);
+        return;
+    }
+
+    if (cmd == "timer") {
+        if (!valid || !IsTimerImage(layers_[i].image)) return;
+        Layer& l = layers_[i];
+        const std::string op = msg["op"].asString();
+        const int v = std::max(0, msg["value"].asInt(0));
+        if (op == "set") {
+            l.timerRemaining = v;
+        } else if (op == "start") {
+            l.timerStart = v;
+            l.timerRemaining = v;
+            l.timerUsed = 0;
+        } else if (op == "reset") {
+            l.timerRemaining = l.timerStart;
+            l.timerUsed = 0;
+        } else if (op == "add") {
+            l.timerRemaining = std::max(0.0, l.timerRemaining + msg["value"].asInt(0) * 60.0);
+        } else if (op == "running") {
+            l.timerRunning = msg["value"].asBool(l.timerRunning);
+        } else if (op == "locked") {
+            l.timerLocked = msg["value"].asBool(l.timerLocked);
+        } else {
+            return;
+        }
+        SyncOverlay(i);
+        SaveConfig(settings_, layers_);
+        SendLayers(selected_);
         return;
     }
 
@@ -1317,7 +1429,12 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (wp == kUsageTimer) {
                 AccountUsage();
-                if (++usageTicks_ >= kUsageSaveEveryTicks) {
+                // A running kiosk timer is saved every tick (15 s), as the
+                // original did, so a power cut costs it seconds, not minutes.
+                const bool timerRunning = std::any_of(layers_.begin(), layers_.end(), [](const Layer& l) {
+                    return IsTimerImage(l.image) && l.timerRunning && l.timerRemaining > 0;
+                });
+                if (++usageTicks_ >= kUsageSaveEveryTicks || timerRunning) {
                     usageTicks_ = 0;
                     SaveConfig(settings_, layers_);
                 }

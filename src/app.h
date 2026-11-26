@@ -36,6 +36,7 @@ private:
     void RebuildOverlays();
     void RestackOverlays();
     void SyncOverlay(int index);
+    void OnTimerChanged(int index, const Layer& timer, bool save);
     void SetAllHidden(bool hidden);
     void SetPositionMode(int index, bool on);
     void CancelPositionMode();
