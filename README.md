@@ -16,9 +16,9 @@
 
 ## התקנה
 
-מורידים את `Floaty.exe` מ-[Releases](../../releases) ומריצים.
-למחשב בלי אינטרנט: `Floaty-offline.exe`.
-מגיעים מ-Overlay Manager? השכבות עוברות לבד.
+- מורידים את `Floaty.exe` מ-[Releases](../../releases) ומריצים.
+- ל-Windows 10 בלי אינטרנט: `Floaty-offline.exe`.
+- מגיעים מ-Overlay Manager? השכבות עוברות לבד.
 
 ## בנייה
 
