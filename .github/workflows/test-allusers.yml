@@ -1,0 +1,95 @@
+name: test-allusers
+
+# Temporary: exercises the all-users install on a real Windows machine (the
+# runner is an administrator, so there is no UAC prompt). Not merged to main.
+on:
+  push:
+    branches: [allusers-topmost]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Web.WebView2 -Version 1.0.2903.40 -OutputDirectory packages -ExcludeVersion | Out-Null
+          cmake -S . -B build -A x64 -DWEBVIEW2_DIR="$PWD/packages/Microsoft.Web.WebView2" | Out-Null
+          cmake --build build --config Release --parallel
+          if ($LASTEXITCODE) { throw "build failed" }
+
+      - name: Where this runs
+        shell: pwsh
+        run: |
+          "user: $(whoami)   step session: $((Get-Process -Id $PID).SessionId)"
+          qwinsta
+          query user 2>&1
+
+      - name: Turn on, launch, relaunch, turn off
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe  = (Resolve-Path build/Release/OverlayManager.exe).Path
+          $pf   = Join-Path $env:ProgramFiles 'TSOOL GEE\Overlay Manager\OverlayManager.exe'
+          $data = Join-Path $env:ProgramData 'TSOOL GEE\Overlay Manager'
+          $fail = @()
+          function Check($ok, $what) { if ($ok) { "PASS  $what" } else { "FAIL  $what"; $script:fail += $what } }
+
+          # A personal configuration with one picture outside ProgramData.
+          $src = Join-Path $env:RUNNER_TEMP 'src-cfg'; New-Item -ItemType Directory -Force $src | Out-Null
+          $img = Join-Path $env:RUNNER_TEMP 'pic.png'; Copy-Item res/icon-preview.png $img
+          @("[General]","Count=1","AutoUpdate=0","[Overlay_0]","Name=test","Image=$img","Enabled=1",
+            "Width=200","Height=200","AnchorH=2","AnchorV=2","OffsetX=2","OffsetY=2","Opacity=255") |
+            Set-Content (Join-Path $src 'config.ini') -Encoding Unicode
+          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+
+          $p = Start-Process $exe -ArgumentList "/allusers-enable `"$sid`" `"$src`"" -Wait -PassThru
+          Check ($p.ExitCode -eq 0) "enable exit code 0 (got $($p.ExitCode))"
+          Check (Test-Path $pf) "copied to Program Files"
+          Check (Test-Path "$data\allusers.ini") "marker written"
+          $cfg = Get-Content "$data\config.ini" -Raw
+          Check ($cfg -match [regex]::Escape("$data\images\pic.png")) "picture path moved to ProgramData\images"
+          Check (Test-Path "$data\images\pic.png") "picture copied"
+          $acl = (Get-Acl $data).Access | ForEach-Object { "$($_.IdentityReference)=$($_.FileSystemRights)" }
+          $acl
+          Check ([bool]($acl -match 'BUILTIN\\Users=ReadAndExecute')) "users may only read"
+          $svc = Get-Service OverlayManagerAllUsers -ErrorAction SilentlyContinue
+          Check ($svc -and $svc.Status -eq 'Running') "service running"
+          Check ((Get-CimInstance Win32_Service -Filter "Name='OverlayManagerAllUsers'").PathName -like "*Program Files*") "service runs the Program Files copy"
+          Check (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Overlay Manager.lnk") "Start menu shortcut"
+
+          # Started in the logged-on session?
+          $active = (qwinsta | Select-String 'Active') -ne $null
+          "active console session: $active"
+          Start-Sleep 15
+          $procs = Get-Process OverlayManager -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $pf }
+          $procs | Format-Table Id, SessionId, Path -AutoSize | Out-String
+          if ($active) {
+            Check ($procs.Count -ge 1) "service started it in the user's session"
+            $procs | Stop-Process -Force
+            Start-Sleep 15
+            $again = Get-Process OverlayManager -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $pf }
+            Check ($again.Count -ge 1) "service started it again after it was killed"
+          } else {
+            "no active session on this runner: launch-into-session not tested here"
+          }
+
+          # A personal copy started at logon hands over (exits) instead of competing.
+          $pp = Start-Process $exe -ArgumentList '/minimized' -PassThru; Start-Sleep 5
+          Check ($pp.HasExited) "personal copy leaves when installed for all users"
+
+          $p = Start-Process $exe -ArgumentList '/allusers-disable' -Wait -PassThru
+          Check ($p.ExitCode -eq 0) "disable exit code 0 (got $($p.ExitCode))"
+          Check (-not (Get-Service OverlayManagerAllUsers -ErrorAction SilentlyContinue)) "service removed"
+          Check (-not (Test-Path "$data\allusers.ini")) "marker removed"
+          Start-Sleep 8
+          $left = Get-Process OverlayManager -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $pf }
+          Check ($left.Count -eq 0) "running copies closed after turning off"
+
+          if ($fail.Count) { throw "$($fail.Count) check(s) failed" }
