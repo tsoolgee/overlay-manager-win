@@ -35,6 +35,14 @@ private:
     // --- overlays ---
     void RebuildOverlays();
     void RestackOverlays();
+    // Always on top: another program's window that went over a layer (a
+    // topmost window, the taskbar...) is noticed and the layers go back above it.
+    bool OverlaysCovered() const;
+    void StartTopmostGuard();
+    void StopTopmostGuard();
+    void RaiseSoon();
+    static void CALLBACK OnShellEvent(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG idObject,
+                                      LONG idChild, DWORD thread, DWORD time);
     void SyncOverlay(int index);
     void OnTimerChanged(int index, const Layer& timer, bool save);
     void SetAllHidden(bool hidden);
@@ -65,8 +73,18 @@ private:
     void OnUpdateFinished(struct UpdateResult* result);
     void RestartIntoUpdate();
 
+    // --- installed for every user (allusers.h) ---
+    void SetAllUsers(bool on);
+    void OnAllUsersDone(bool on, int code);
+    void MachineTick();
+    void ReloadSharedConfig();
+    void LeaveMachineMode();
+
     void ShowManager();
     void RequestQuit();
+    // Closed from the tray or the window, rather than by an update or a
+    // hand-over: in the all-users mode the service then leaves this session be.
+    void ExitByUser();
 
     // --- dialogs, run on the UI thread in response to a page request ---
     void BrowseImage(int index);
@@ -79,6 +97,7 @@ private:
     HINSTANCE inst_ = nullptr;
     HWND hidden_ = nullptr;   // owns the tray icon, hotkey and display messages
     HANDLE mutex_ = nullptr;
+    HWINEVENTHOOK shellHooks_[3] = {};
 
     Settings settings_;
     std::vector<Layer> layers_;
@@ -94,6 +113,12 @@ private:
     unsigned long long lastUsageTick_ = 0;  // GetTickCount64 at the last usage count
     int usageTicks_ = 0;                    // counts since the last save
     bool quitting_ = false;
+
+    bool machine_ = false;        // the all-users install, reading the shared settings
+    bool canManage_ = true;       // false: another user's read-only view of them
+    bool allUsersBusy_ = false;   // waiting on the elevated step
+    FILETIME exeStamp_{};         // the installed file, to notice an update
+    FILETIME cfgStamp_{};         // the shared config.ini, to notice the manager's edits
 
     bool updateBusy_ = false;
     std::string updateReady_;      // version installed and waiting for a restart

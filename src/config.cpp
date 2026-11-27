@@ -61,9 +61,32 @@ void PutDouble(std::wstring& out, const wchar_t* key, double value) {
     PutStr(out, key, buf);
 }
 
+std::wstring g_configDir;     // SetConfigDir(); empty = the default
+bool g_configReadOnly = false;
+
+std::wstring EnvConfigDir() {
+    wchar_t buf[MAX_PATH] = {0};
+    const DWORD n = GetEnvironmentVariableW(L"OVERLAY_MANAGER_CONFIG_DIR", buf, MAX_PATH);
+    return (n > 0 && n < MAX_PATH) ? std::wstring(buf, n) : std::wstring();
+}
+
 }  // namespace
 
+void SetConfigDir(const std::wstring& dir) { g_configDir = dir; }
+void SetConfigReadOnly(bool readOnly) { g_configReadOnly = readOnly; }
+bool ConfigDirFromEnvironment() { return !EnvConfigDir().empty(); }
+
 std::wstring ConfigDir() {
+    if (!g_configDir.empty()) return g_configDir;
+    const std::wstring env = EnvConfigDir();
+    if (!env.empty()) {
+        CreateDirectoryW(env.c_str(), nullptr);
+        return env;
+    }
+    return PerUserConfigDir();
+}
+
+std::wstring PerUserConfigDir() {
     wchar_t appdata[MAX_PATH] = {0};
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata)))
         return L".";
@@ -137,6 +160,7 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
 }
 
 bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
+    if (g_configReadOnly) return true;
     // The original wrote key by key with WritePrivateProfileString, so a crash
     // mid-save could leave a half-written file, and deleting a layer left the
     // now-surplus [Overlay_N] section behind. Build the whole file, then swap

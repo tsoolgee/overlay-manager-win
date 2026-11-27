@@ -506,6 +506,7 @@ select {
 
 /* תיבת סימון */
 .check { display: inline-flex; align-items: flex-start; gap: 9px; cursor: pointer; color: var(--ink); font-size: 13.5px; }
+.check[hidden], .btn[hidden] { display: none; }
 .check input { position: absolute; opacity: 0; width: 0; height: 0; }
 .check .box {
   width: 18px; height: 18px; margin-top: 1px;
@@ -856,6 +857,14 @@ dialog[open] { display: flex; flex-direction: column; animation: pop .16s ease-o
       <label class="check"><input type="checkbox" id="setAutoStart"><span class="box"></span><span>להפעיל עם Windows<small>השכבות יופיעו מיד אחרי הכניסה למחשב, בלי לפתוח את החלון.</small></span></label>
       <label class="check"><input type="checkbox" id="setTrayIcon"><span class="box"></span><span>להציג סמל ליד השעון<small>ממנו פותחים את החלון ומסתירים את השכבות.</small></span></label>
       <label class="check"><input type="checkbox" id="setTray"><span class="box"></span><span>סגירת החלון משאירה את השכבות על המסך<small>אחרת, סגירת החלון יוצאת מהתוכנה.</small></span></label>
+    </section>
+    <section class="dlg-section">
+      <h3>כל המשתמשים במחשב</h3>
+      <p class="note" id="allUsersText"></p>
+      <div class="reset-row">
+        <span id="allUsersState"></span>
+        <button class="btn small" id="btnAllUsers"></button>
+      </div>
     </section>
     <section class="dlg-section">
       <h3>קיצורי מקלדת</h3>
@@ -1699,6 +1708,15 @@ function applySettings() {
     k.textContent = state.capture === which ? "מחכה…" : key || "כבוי";
   }
   $("hkCycleOff").disabled = !s.cycleHotkey;
+  // מותקן לכל המשתמשים: השירות מפעיל את התוכנה בכל כניסה ומתקין את העדכונים.
+  $("setAutoStart").closest(".check").hidden = !!s.machine;
+  $("btnCheckUpdate").hidden = !!s.machine;
+  $("allUsersText").textContent = s.machine
+    ? "השכבות שכאן מוצגות לכל מי שנכנס למחשב, גם בחשבונות אחרים, עם סמל ליד השעון. אפשר לשנות אותן רק מהחשבון הזה; משתמשים אחרים לא יכולים לשנות, להסתיר או לסגור אותן. העדכונים מותקנים לבד על ידי שירות של Windows."
+    : "להציג את השכבות האלה לכל מי שנכנס למחשב, גם בחשבונות אחרים. שירות של Windows יפעיל את התוכנה אצל כל משתמש שנכנס, והסמל יישאר ליד השעון. אפשר יהיה לשנות את השכבות רק מהחשבון הזה, ומשתמשים אחרים לא יוכלו להסתיר או לסגור אותן. נדרש אישור מנהל.";
+  $("allUsersState").innerHTML = s.machine ? "<b>מותקן לכל המשתמשים</b>" : "רק בחשבון הזה";
+  $("btnAllUsers").textContent = s.allUsersBusy ? "ממתין לאישור…" : s.machine ? "ביטול ההתקנה לכל המשתמשים" : "התקנה לכל המשתמשים";
+  $("btnAllUsers").disabled = !!s.allUsersBusy;
   document.querySelectorAll("#settingsDlg .check .box").forEach((b) => { b.innerHTML = ICON.check; });
   applyTheme();
 }
@@ -1776,6 +1794,7 @@ function renderUpdateDetails() {
       html = `נבדק ב-${v(at)}: בגיטהאב יש גרסה ${v(u.latest)}${pub ? `, שפורסמה ב-${v(pub)}` : ""}. הגרסה שלך: ${v(u.current)}.`;
     else html = `נבדק ב-${v(at)}: יש לך את הגרסה העדכנית ביותר, ${v(u.current)}${pub ? `, שפורסמה ב-${v(pub)}` : ""}.`;
   }
+  if (state.settings.machine) html = "בהתקנה לכל המשתמשים, שירות של Windows בודק ומתקין את העדכונים, וכל העותקים במחשב עוברים לגרסה החדשה לבד.";
   $("updateDetails").innerHTML = html;
 }
 
@@ -1823,6 +1842,7 @@ $("btnResetAll").addEventListener("click", async () => {
 $("btnCloseSettings").addEventListener("click", () => $("settingsDlg").close());
 $("btnExit").addEventListener("click", () => send({ c: "exit" }));
 $("btnCheckUpdate").addEventListener("click", () => send({ c: "checkUpdate" }));
+$("btnAllUsers").addEventListener("click", () => send({ c: "allUsers", on: !state.settings.machine }));
 // קישורים נפתחים בדפדפן דרך המארח, שמכיר רק רשימה קבועה; הדף עצמו לא מנווט.
 $("stickersClose").addEventListener("click", () => $("stickersDlg").close());
 document.querySelectorAll("[data-link]").forEach((a) => a.addEventListener("click", (e) => {

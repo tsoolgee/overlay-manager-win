@@ -78,3 +78,14 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers);
 
 std::wstring ConfigPath();
 std::wstring ConfigDir();
+// %APPDATA%\OverlayManager, whatever ConfigDir() currently points at.
+std::wstring PerUserConfigDir();
+// Points ConfigDir() elsewhere: the machine-wide folder when the program is
+// installed for every user. Empty goes back to the default.
+void SetConfigDir(const std::wstring& dir);
+// OVERLAY_MANAGER_CONFIG_DIR is set: a test run with a folder of its own,
+// which must not touch the real autostart entry either.
+bool ConfigDirFromEnvironment();
+// Another user's view of a machine-wide configuration: it may read it but not
+// write it, so saving quietly does nothing instead of failing over and over.
+void SetConfigReadOnly(bool readOnly);

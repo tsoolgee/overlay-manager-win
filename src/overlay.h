@@ -40,6 +40,11 @@ struct TimerHooks {
     std::function<bool()> autoStart;
     std::function<void()> toggleAutoStart;
     std::function<void(int index)> openManager;
+    // Another user's view of the all-users install: the timer runs, but its
+    // menu and dragging are the manager's.
+    std::function<bool()> readOnly;
+    // Hidden in the all-users install, where the service starts the program.
+    std::function<bool()> showAutoStart;
 };
 
 class OverlayWindow {

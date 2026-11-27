@@ -1,12 +1,16 @@
 #include "app.h"
 
 #include <commdlg.h>
+#include <dwmapi.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <thread>
 
+#include "allusers.h"
 #include "json.h"
 #include "resource.h"
 #include "timer.h"
@@ -39,6 +43,65 @@ const UINT kCheckEveryMs = 6 * 60 * 60 * 1000;
 const UINT_PTR kUsageTimer = 2;
 const UINT kUsageEveryMs = 15 * 1000;
 const int kUsageSaveEveryTicks = 20;   // 20 × 15 s = 5 minutes
+
+// Always on top. Topmost is a band, not a guarantee: any later topmost window
+// (a tool window, Task Manager, the taskbar when clicked) lands above the
+// layers. A switch of the active window is checked right after it settles,
+// and a slow timer catches whatever came over them without such an event.
+const UINT_PTR kTopmostTimer = 3;
+const UINT kTopmostEveryMs = 1000;
+const UINT_PTR kRaiseSoonTimer = 4;
+const UINT kRaiseSoonMs = 60;
+
+// The one App, for the WinEvent callback, which carries no context pointer.
+App* g_app = nullptr;
+
+// All-users install: every few seconds, see whether it was turned off, the
+// program file was updated by the service, or the manager changed the layers.
+const UINT_PTR kMachineTimer = 5;
+const UINT kMachineEveryMs = 3000;
+const UINT WM_ALLUSERS_DONE = WM_APP + 3;  // wParam: turning on?; lParam: exit code
+
+bool FileStamp(const std::wstring& path, FILETIME& out) {
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return false;
+    out = a.ftLastWriteTime;
+    return true;
+}
+
+// The executable behind a window, to tell the installed copy from another one.
+bool WindowIsFromExe(HWND hwnd, const std::wstring& exe) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!p) return true;  // cannot tell: leave it alone
+    wchar_t path[MAX_PATH * 2] = {0};
+    DWORD len = (DWORD)std::size(path);
+    const bool same = QueryFullProcessImageNameW(p, 0, path, &len) && _wcsicmp(path, exe.c_str()) == 0;
+    CloseHandle(p);
+    return same;
+}
+
+// Every field the manager edits; not the timer's countdown or the usage
+// count, which the manager's copy saves every few seconds while they run.
+bool SameLayout(const std::vector<Layer>& a, const std::vector<Layer>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const Layer& x = a[i];
+        const Layer& y = b[i];
+        if (x.name != y.name || x.image != y.image || x.enabled != y.enabled || x.width != y.width ||
+            x.height != y.height || x.lockAspect != y.lockAspect || x.monitor != y.monitor ||
+            x.anchorH != y.anchorH || x.anchorV != y.anchorV ||
+            std::fabs(x.offsetX - y.offsetX) > 1e-6 || std::fabs(x.offsetY - y.offsetY) > 1e-6 ||
+            x.opacity != y.opacity || x.useTint != y.useTint || x.tintR != y.tintR ||
+            x.tintG != y.tintG || x.tintB != y.tintB || std::fabs(x.rotation - y.rotation) > 1e-6 ||
+            x.clickThrough != y.clickThrough || x.grayscale != y.grayscale ||
+            x.removeBg != y.removeBg || x.bgTolerance != y.bgTolerance ||
+            x.timerStart != y.timerStart || x.timerLocked != y.timerLocked)
+            return false;
+    }
+    return true;
+}
 
 // The settings a first run starts with, and "Reset settings" returns to.
 Settings DefaultSettings() {
@@ -201,6 +264,7 @@ struct UpdateResult {
 App::App(HINSTANCE inst) : inst_(inst) {}
 
 App::~App() {
+    StopTopmostGuard();
     RemoveTrayIcon();
     if (hidden_) {
         UnregisterHotKey(hidden_, kHotkeyId);
@@ -216,20 +280,47 @@ App::~App() {
 }
 
 bool App::Start(bool startMinimized, bool afterUpdate) {
+    // Installed for every user: the copy in Program Files runs everywhere and
+    // reads the shared settings. A personal copy (an old download, a Run
+    // entry from before) does not compete with it: opened by hand it opens
+    // the installed one, started at logon it just leaves.
+    if (allusers::Enabled() && !ConfigDirFromEnvironment()) {
+        if (!allusers::IsMachineCopy()) {
+            if (!startMinimized) allusers::Launch(allusers::MachineExe(), L"");
+            return false;
+        }
+        machine_ = true;
+        SetConfigDir(allusers::MachineDir());
+        canManage_ = allusers::CanWriteMachineDir();
+        SetConfigReadOnly(!canManage_);
+    }
+
     // Single instance: a second launch pops the running one's window rather
     // than adding a duplicate set of overlays.
     mutex_ = CreateMutexW(nullptr, TRUE, kMutexName);
     bool taken = mutex_ && GetLastError() == ERROR_ALREADY_EXISTS;
+    HWND existing = taken ? FindWindowW(kHiddenClass, nullptr) : nullptr;
+    if (taken && machine_ && existing && !WindowIsFromExe(existing, ExePath())) {
+        // Another copy holds this session - a personal one, or an older
+        // version that knows nothing of the all-users install. It shows that
+        // user's own layers instead of the shared ones: ask it to close (it
+        // saves and exits on the tray's Exit command) and take over.
+        PostMessageW(existing, WM_COMMAND, CMD_EXIT, 0);
+        afterUpdate = true;
+    }
     if (taken && afterUpdate) {
-        // Launched by the updater while the old version is still shutting
-        // down: wait for it to let go instead of handing over to it.
+        // Launched by the updater (or a hand-over) while the previous copy is
+        // still shutting down: wait for it to let go instead of handing over to it.
         const DWORD w = WaitForSingleObject(mutex_, 20000);
         taken = !(w == WAIT_OBJECT_0 || w == WAIT_ABANDONED);
+        existing = taken ? FindWindowW(kHiddenClass, nullptr) : nullptr;
     }
     if (taken) {
-        if (HWND existing = FindWindowW(kHiddenClass, nullptr))
+        // Started at logon (or by the service) while it already runs: nothing
+        // to do, and no window to throw at the user.
+        if (existing && !startMinimized)
             PostMessageW(existing, WM_COMMAND, CMD_OPEN, 0);
-        else
+        else if (!existing && !startMinimized)
             HebrewMessageBox(nullptr, L"לא ניתן היה להחליף את המופע הקודם של התוכנה.",
                              MB_ICONWARNING | MB_OK);
         CloseHandle(mutex_);
@@ -247,17 +338,26 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     if (!LoadConfig(settings_, layers_) || settings_.statsSince.empty())
         settings_.statsSince = TodayIso();  // usage is counted from the first run
 
-    // The registry is the source of truth for autostart: the user may have
-    // removed the entry through Task Manager since the config was written.
-    settings_.autoStart = IsAutoStartEnabled();
-    // The entry names a path. If the program has since been moved and that
-    // file is gone, autostart would fail silently at the next logon: point
-    // it here. (A copy elsewhere that still exists is left alone, so running
-    // a second copy once does not take the entry over.)
-    if (settings_.autoStart) {
-        const std::wstring target = AutoStartTarget();
-        if (!target.empty() && GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES)
-            SetAutoStartEnabled(true);
+    if (machine_) {
+        // The service starts it at every logon; a personal Run entry would only
+        // start a second copy that hands straight over.
+        settings_.autoStart = false;
+        if (canManage_) allusers::ClearSessionExited();  // opened again by hand
+        FileStamp(allusers::MachineExe(), exeStamp_);
+        FileStamp(ConfigPath(), cfgStamp_);
+    } else if (!ConfigDirFromEnvironment()) {
+        // The registry is the source of truth for autostart: the user may have
+        // removed the entry through Task Manager since the config was written.
+        settings_.autoStart = IsAutoStartEnabled();
+        // The entry names a path. If the program has since been moved and that
+        // file is gone, autostart would fail silently at the next logon: point
+        // it here. (A copy elsewhere that still exists is left alone, so running
+        // a second copy once does not take the entry over.)
+        if (settings_.autoStart) {
+            const std::wstring target = AutoStartTarget();
+            if (!target.empty() && GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES)
+                SetAutoStartEnabled(true);
+        }
     }
 
     if (!layers_.empty()) selected_ = 0;
@@ -280,8 +380,17 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     OverlayWindow::RegisterWindowClass(inst_);
     ManagerWindow::RegisterWindowClass(inst_);
 
-    if (settings_.showTrayIcon) CreateTrayIcon();
+    if (settings_.showTrayIcon && CreateTrayIcon()) UpdateTrayIcon();
     RebuildOverlays();
+    StartTopmostGuard();
+    if (machine_) SetTimer(hidden_, kMachineTimer, kMachineEveryMs, nullptr);
+
+    // Another user's view of the shared layers has nothing to manage: no
+    // window, no keys, no updates (the service installs those).
+    if (!canManage_) {
+        lastUsageTick_ = GetTickCount64();
+        return true;
+    }
 
     manager_ = std::make_unique<ManagerWindow>(
         inst_, [this](const std::string& json) { OnUiMessage(json); },
@@ -308,16 +417,18 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     // version it installed) or it did not take, and either way the page says so.
     // Only a note about this very file counts: another copy of the program in
     // another folder shares the settings folder but was not the one replaced.
-    const UpdateRecord record = TakeUpdateRecord();
-    if (record.present && _wcsicmp(ToWide(record.exe).c_str(), ExePath().c_str()) == 0) {
-        if (record.to == AppVersion())
-            updated_ = record;
-        else
-            updateFailedTo_ = record.to;
+    // In the all-users install the service updates the program, not this copy.
+    if (!machine_) {
+        const UpdateRecord record = TakeUpdateRecord();
+        if (record.present && _wcsicmp(ToWide(record.exe).c_str(), ExePath().c_str()) == 0) {
+            if (record.to == AppVersion())
+                updated_ = record;
+            else
+                updateFailedTo_ = record.to;
+        }
+        CleanupAfterUpdate();
+        SetTimer(hidden_, kUpdateTimer, kFirstCheckMs, nullptr);
     }
-    (void)afterUpdate;
-    CleanupAfterUpdate();
-    SetTimer(hidden_, kUpdateTimer, kFirstCheckMs, nullptr);
     lastUsageTick_ = GetTickCount64();
     SetTimer(hidden_, kUsageTimer, kUsageEveryMs, nullptr);
     return true;
@@ -367,7 +478,9 @@ void App::RebuildOverlays() {
                         SendLayers(selected_);
                     }
                     ShowManager();
-                }}));
+                },
+                [this] { return !canManage_; },
+                [this] { return !machine_; }}));
         overlays_.back()->SetHiddenByHotkey(allHidden_);
     }
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
@@ -385,6 +498,74 @@ void App::RestackOverlays() {
     // later layer would cover it.
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
         SetWindowPos(overlays_[positionIndex_]->Hwnd(), HWND_TOPMOST, 0, 0, 0, 0, flags);
+}
+
+bool App::OverlaysCovered() const {
+    // Walk up the z-order from each layer on screen. Anything visible above it
+    // that overlaps it, and is not this program's own (the manager, a menu,
+    // the timer's prompt), has covered it. Only topmost windows can be above
+    // a topmost layer, so the walk is short.
+    const DWORD self = GetCurrentProcessId();
+    for (const auto& o : overlays_) {
+        const HWND h = o->Hwnd();
+        RECT mine;
+        if (!h || !IsWindowVisible(h) || !GetWindowRect(h, &mine)) continue;
+        for (HWND w = GetWindow(h, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
+            if (!IsWindowVisible(w)) continue;
+            DWORD pid = 0;
+            GetWindowThreadProcessId(w, &pid);
+            if (pid == self) continue;
+            // Suspended store apps and windows on other virtual desktops are
+            // "visible" but not drawn.
+            BOOL cloaked = FALSE;
+            if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked)
+                continue;
+            RECT r, overlap;
+            if (GetWindowRect(w, &r) && IntersectRect(&overlap, &mine, &r)) return true;
+        }
+    }
+    return false;
+}
+
+void App::StartTopmostGuard() {
+    g_app = this;
+    // Out of context, so nothing is loaded into other processes; our own
+    // windows are skipped at the source.
+    const DWORD flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
+    shellHooks_[0] = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+                                     &App::OnShellEvent, 0, 0, flags);
+    shellHooks_[1] = SetWinEventHook(EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZEEND, nullptr,
+                                     &App::OnShellEvent, 0, 0, flags);
+    shellHooks_[2] = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr,
+                                     &App::OnShellEvent, 0, 0, flags);
+    SetTimer(hidden_, kTopmostTimer, kTopmostEveryMs, nullptr);
+}
+
+void App::StopTopmostGuard() {
+    for (auto& h : shellHooks_) {
+        if (h) UnhookWinEvent(h);
+        h = nullptr;
+    }
+    if (hidden_) {
+        KillTimer(hidden_, kTopmostTimer);
+        KillTimer(hidden_, kRaiseSoonTimer);
+    }
+    if (g_app == this) g_app = nullptr;
+}
+
+void App::RaiseSoon() {
+    // Not at once: the window that just came up is still settling into its
+    // place, and a burst of events (a menu opening) needs one check, not ten.
+    if (hidden_) SetTimer(hidden_, kRaiseSoonTimer, kRaiseSoonMs, nullptr);
+}
+
+void CALLBACK App::OnShellEvent(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG idObject, LONG,
+                                DWORD, DWORD) {
+    if (!g_app || !hwnd || idObject != OBJID_WINDOW) return;
+    // EVENT_OBJECT_SHOW fires for every control on every dialog; only a
+    // window of its own can go over the layers.
+    if (event == EVENT_OBJECT_SHOW && GetAncestor(hwnd, GA_ROOT) != hwnd) return;
+    g_app->RaiseSoon();
 }
 
 void App::OnTimerChanged(int index, const Layer& t, bool save) {
@@ -525,6 +706,10 @@ js::Value App::SettingsJson() const {
     // that a window opened later never sees.
     s["hotkeyBusy"] = !hotkeyOk_;
     s["cycleBusy"] = settings_.cycleVk != 0 && !cycleOk_;
+    // Installed for every user (and this is its manager), or waiting on the
+    // elevated step that turns that on or off.
+    s["machine"] = machine_;
+    s["allUsersBusy"] = allUsersBusy_;
     return js::Value(std::move(s));
 }
 
@@ -850,7 +1035,7 @@ void App::OnUiMessage(const std::string& json) {
     if (cmd == "settings") {
         const js::Value s = msg["settings"];
         const bool wantAutoStart = s["autoStart"].asBool(settings_.autoStart);
-        if (wantAutoStart != settings_.autoStart) {
+        if (!machine_ && wantAutoStart != settings_.autoStart) {
             SetAutoStartEnabled(wantAutoStart);
             // Read it back: the write can fail silently under a locked-down
             // policy, and the checkbox should show what is really there.
@@ -892,11 +1077,13 @@ void App::OnUiMessage(const std::string& json) {
     }
 
     if (cmd == "checkUpdate") {
+        if (machine_) return;  // the service checks and installs
         StartUpdateCheck(true, settings_.autoUpdate);
         return;
     }
 
     if (cmd == "installUpdate") {
+        if (machine_) return;
         updateError_.clear();
         StartUpdateCheck(true, true);
         return;
@@ -932,7 +1119,12 @@ void App::OnUiMessage(const std::string& json) {
     }
 
     if (cmd == "exit") {
-        RequestQuit();
+        ExitByUser();
+        return;
+    }
+
+    if (cmd == "allUsers") {
+        SetAllUsers(msg["on"].asBool(false));
         return;
     }
 }
@@ -957,7 +1149,9 @@ void App::BrowseImage(int index) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
 
     if (!GetOpenFileNameW(&ofn)) return;
-    SetLayerImage(index, file);
+    // Everyone shows this layer: the picture must be somewhere they can read,
+    // not in the manager's own profile.
+    SetLayerImage(index, machine_ ? allusers::ShareImage(file) : std::wstring(file));
 }
 
 void App::SetLayerImage(int index, const std::wstring& image) {
@@ -1070,7 +1264,9 @@ void App::UpdateTrayIcon() {
     // The tooltip is the only place the hidden state is visible when the
     // manager window is closed.
     const std::wstring tip =
-        allHidden_ ? std::wstring(kAppName) + L" — השכבות מוסתרות" : kAppName;
+        allHidden_ ? std::wstring(kAppName) + L" — השכבות מוסתרות"
+        : machine_ ? std::wstring(kAppName) + L" — לכל המשתמשים"
+                   : std::wstring(kAppName);
     wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
@@ -1078,12 +1274,17 @@ void App::UpdateTrayIcon() {
 void App::ShowTrayMenu() {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
+    if (!canManage_) {
+        // Another user's view: nothing here is theirs to change.
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"השכבות מנוהלות לכל המשתמשים במחשב");
+    } else {
     AppendMenuW(menu, MF_STRING, CMD_OPEN, L"פתח חלון ניהול");
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_ALL,
                 allHidden_ ? L"הצג הכל" : L"הסתר הכל");
     if (layers_.size() > 1) AppendMenuW(menu, MF_STRING, CMD_NEXT_LAYER, L"השכבה הבאה");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_EXIT, L"יציאה");
+    }
 
     POINT pt;
     GetCursorPos(&pt);
@@ -1391,12 +1592,144 @@ void App::RestartIntoUpdate() {
     RequestQuit();
 }
 
+// --- installed for every user ---------------------------------------------
+
+void App::SetAllUsers(bool on) {
+    if (allUsersBusy_ || on == machine_ || !canManage_) return;
+    allUsersBusy_ = true;
+    SendSettings();
+    // What goes to everyone is what is on screen now.
+    AccountUsage();
+    SaveConfig(settings_, layers_);
+    std::wstring args = L"/allusers-disable";
+    if (on)
+        args = L"/allusers-enable \"" + allusers::CurrentUserSid() + L"\" \"" + ConfigDir() + L"\"";
+    Toast("מאשרים בחלון ההרשאות של Windows…", false);
+    const HWND target = hidden_;
+    std::thread([target, args, on] {
+        const int code = allusers::RunElevatedAndWait(args);
+        PostMessageW(target, WM_ALLUSERS_DONE, on ? 1 : 0, (LPARAM)code);
+    }).detach();
+}
+
+void App::OnAllUsersDone(bool on, int code) {
+    allUsersBusy_ = false;
+    if (code != 0) {
+        SendSettings();
+        Toast(allusers::ErrorText(code), true);
+        return;
+    }
+    if (!on) {
+        LeaveMachineMode();
+        return;
+    }
+    // From now on the service starts the installed copy at every logon.
+    if (IsAutoStartEnabled()) SetAutoStartEnabled(false);
+    // Hand this session over to it: same layers, now from the shared settings.
+    const bool shown = manager_ && manager_->IsVisible();
+    if (allusers::Launch(allusers::MachineExe(), shown ? L"/handover" : L"/handover /minimized")) {
+        RequestQuit();
+    } else {
+        SendSettings();
+        Toast("ההתקנה הסתיימה, אבל לא ניתן היה לפתוח את העותק המותקן. הוא ייפתח בכניסה הבאה", true);
+    }
+}
+
+void App::MachineTick() {
+    if (quitting_) return;
+    if (!allusers::Enabled()) {
+        LeaveMachineMode();
+        return;
+    }
+    FILETIME t{};
+    // The service put a new version in place: restart on it.
+    if (FileStamp(allusers::MachineExe(), t) && CompareFileTime(&t, &exeStamp_) != 0) {
+        const bool shown = manager_ && manager_->IsVisible();
+        if (allusers::Launch(allusers::MachineExe(), shown ? L"/handover" : L"/handover /minimized")) {
+            RequestQuit();
+            return;
+        }
+        exeStamp_ = t;  // try again only after the next change
+    }
+    // The manager changed the layers: show the same here.
+    if (!canManage_ && FileStamp(ConfigPath(), t) && CompareFileTime(&t, &cfgStamp_) != 0) {
+        cfgStamp_ = t;
+        ReloadSharedConfig();
+    }
+}
+
+void App::ReloadSharedConfig() {
+    Settings s = DefaultSettings();
+    std::vector<Layer> layers;
+    if (!LoadConfig(s, layers)) return;  // mid-write; the next tick sees it whole
+    const bool trayChanged = s.showTrayIcon != settings_.showTrayIcon;
+    settings_ = s;
+    settings_.autoStart = false;
+    if (trayChanged) {
+        if (settings_.showTrayIcon) CreateTrayIcon(); else RemoveTrayIcon();
+    }
+    // Only a real edit rebuilds the windows; the manager's copy rewrites the
+    // file every few seconds while a timer runs, and that alone must not make
+    // every other screen flicker.
+    if (SameLayout(layers, layers_)) return;
+    AccountUsage();
+    layers_ = std::move(layers);
+    RebuildOverlays();
+}
+
+void App::LeaveMachineMode() {
+    if (quitting_) return;
+    if (!canManage_) {
+        // Turned off: another user's view simply ends.
+        RequestQuit();
+        return;
+    }
+    // The manager keeps the layers, as their own again. The copy in Program
+    // Files is going away (and belongs to the administrators), so the program
+    // moves to the user's own programs folder and starts from there.
+    AccountUsage();
+    const std::wstring personal = allusers::PersonalExe();
+    const std::wstring dir = personal.substr(0, personal.find_last_of(L'\\'));
+    SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+    const bool copied = CopyFileW(ExePath().c_str(), personal.c_str(), FALSE) ||
+                        GetFileAttributesW(personal.c_str()) != INVALID_FILE_ATTRIBUTES;
+    SetConfigDir(L"");
+    SetConfigReadOnly(false);
+    machine_ = false;
+    SaveConfig(settings_, layers_);  // into %APPDATA%\OverlayManager now
+    if (!copied) {
+        SendSettings();
+        Toast("ההתקנה לכל המשתמשים בוטלה. השכבות נשמרו אצלך", false);
+        return;
+    }
+    // At logon as before, now from the user's own copy.
+    const std::wstring cmd = L"\"" + personal + L"\" /minimized";
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
+                      KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegSetValueExW(key, L"OverlayManagerApp", 0, REG_SZ,
+                       reinterpret_cast<const BYTE*>(cmd.c_str()),
+                       (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+    const bool shown = manager_ && manager_->IsVisible();
+    if (allusers::Launch(personal, shown ? L"/handover" : L"/handover /minimized")) RequestQuit();
+}
+
+void App::ExitByUser() {
+    // The manager closed it on purpose: the service does not start it again
+    // in this session until the next logon.
+    if (machine_ && canManage_) allusers::MarkSessionExited();
+    RequestQuit();
+}
+
 void App::ShowManager() {
     if (manager_) manager_->Show();
 }
 
 void App::RequestQuit() {
     quitting_ = true;
+    StopTopmostGuard();
     // Persist before leaving, so a session's tweaks are not silently lost.
     AccountUsage();
     SaveConfig(settings_, layers_);
@@ -1423,10 +1756,13 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_COMMAND:
+            // Another user's view takes no commands; the service would start
+            // it again within seconds anyway.
+            if (!canManage_) return 0;
             switch (LOWORD(wp)) {
                 case CMD_OPEN: ShowManager(); return 0;
                 case CMD_TOGGLE_ALL: SetAllHidden(!allHidden_); return 0;
-                case CMD_EXIT: RequestQuit(); return 0;
+                case CMD_EXIT: ExitByUser(); return 0;
                 case CMD_NEXT_LAYER: ShowNextLayer(); return 0;
                 default: break;
             }
@@ -1436,7 +1772,20 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             OnUpdateFinished(reinterpret_cast<UpdateResult*>(lp));
             return 0;
 
+        case WM_ALLUSERS_DONE:
+            OnAllUsersDone(wp != 0, (int)lp);
+            return 0;
+
         case WM_TIMER:
+            if (wp == kTopmostTimer || wp == kRaiseSoonTimer) {
+                if (wp == kRaiseSoonTimer) KillTimer(hidden_, kRaiseSoonTimer);
+                if (!quitting_ && OverlaysCovered()) RestackOverlays();
+                return 0;
+            }
+            if (wp == kMachineTimer) {
+                MachineTick();
+                return 0;
+            }
             if (wp == kUpdateTimer) {
                 SetTimer(hidden_, kUpdateTimer, kCheckEveryMs, nullptr);
                 // Always look; install only when automatic updates are on.

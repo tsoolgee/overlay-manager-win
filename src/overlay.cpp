@@ -960,6 +960,7 @@ void OverlayWindow::TimerTick() {
 }
 
 void OverlayWindow::TimerMenu() {
+    if (timerHooks_.readOnly && timerHooks_.readOnly()) return;
     enum { kSet = 1, kStart, kReset, kPause, kLock, kAuto, kOpen, kAdd = 100, kSub = 200 };
     HMENU add = CreatePopupMenu();
     for (int m : {1, 5, 10, 15, 30, 60})
@@ -977,7 +978,8 @@ void OverlayWindow::TimerMenu() {
     AppendMenuW(menu, MF_STRING | (layer_.timerRunning ? 0 : MF_CHECKED), kPause, L"השהיה");
     AppendMenuW(menu, MF_STRING | (layer_.timerLocked ? MF_CHECKED : 0), kLock, L"נעילת מיקום");
     const bool autoStart = timerHooks_.autoStart && timerHooks_.autoStart();
-    AppendMenuW(menu, MF_STRING | (autoStart ? MF_CHECKED : 0), kAuto, L"הפעלה עם Windows");
+    if (!timerHooks_.showAutoStart || timerHooks_.showAutoStart())
+        AppendMenuW(menu, MF_STRING | (autoStart ? MF_CHECKED : 0), kAuto, L"הפעלה עם Windows");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kOpen, L"הגדרות ב-Overlay Manager");
 
@@ -1064,7 +1066,7 @@ LRESULT OverlayWindow::HandleTimer(UINT msg, WPARAM wp, LPARAM lp, bool& handled
                 POINT now;
                 GetCursorPos(&now);
                 const int dx = now.x - pressCursor_.x, dy = now.y - pressCursor_.y;
-                if (!layer_.timerLocked && (dragged_ || std::abs(dx) >= 3 || std::abs(dy) >= 3)) {
+                if (!layer_.timerLocked && !(timerHooks_.readOnly && timerHooks_.readOnly()) && (dragged_ || std::abs(dx) >= 3 || std::abs(dy) >= 3)) {
                     dragged_ = true;
                     // Back from the panel's new top-left to the bar's anchored
                     // offsets, which is what the layer stores.
