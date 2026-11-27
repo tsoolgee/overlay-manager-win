@@ -104,8 +104,10 @@ jobs:
 
             # Another user: a standard account, same session (via runas).
             $pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 16 | ForEach-Object { [char]$_ }) + 'aA1!'
-            net user omviewer $pw /add | Out-Null
-            $cred = New-Object PSCredential('omviewer', (ConvertTo-SecureString $pw -AsPlainText -Force))
+            $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+            New-LocalUser -Name omviewer -Password $sec -AccountNeverExpires | Out-Null
+            Add-LocalGroupMember -Group Users -Member omviewer -ErrorAction SilentlyContinue
+            $cred = New-Object PSCredential('omviewer', $sec)
             $v = Start-Process $pf -ArgumentList '/minimized' -Credential $cred -LoadUserProfile -WorkingDirectory (Split-Path $pf) -PassThru
             Start-Sleep 8
             Check (-not $v.HasExited) "another user's copy runs"
