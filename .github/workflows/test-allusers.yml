@@ -1,10 +1,11 @@
 name: test-allusers
 
-# Temporary: exercises the all-users install on a real Windows machine (the
-# runner is an administrator, so there is no UAC prompt). Not merged to main.
+# Exercises the all-users install on a real Windows machine: the runner is an
+# administrator (no UAC prompt) with a logged-on console session, so the
+# service really starts the program in a user's session. It creates a local
+# user and installs a service, so it runs only by hand:
+#   gh workflow run test-allusers.yml --ref <branch>
 on:
-  push:
-    branches: [allusers-topmost]
   workflow_dispatch:
 
 permissions:
