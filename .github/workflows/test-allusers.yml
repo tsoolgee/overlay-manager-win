@@ -69,14 +69,68 @@ jobs:
           $active = (qwinsta | Select-String 'Active') -ne $null
           "active console session: $active"
           Start-Sleep 15
-          $procs = Get-Process OverlayManager -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $pf }
-          $procs | Format-Table Id, SessionId, Path -AutoSize | Out-String
+          $inSession = { Get-Process OverlayManager -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $pf -and $_.SessionId -ne 0 } }
+          Get-Process OverlayManager -ErrorAction SilentlyContinue | Format-Table Id, SessionId, Path -AutoSize | Out-String
           if ($active) {
+            $procs = @(& $inSession)
             Check ($procs.Count -ge 1) "service started it in the user's session"
-            $procs | Stop-Process -Force
+            $procs | Stop-Process -Force          # only the session's copy, not the service
             Start-Sleep 15
-            $again = Get-Process OverlayManager -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $pf }
-            Check ($again.Count -ge 1) "service started it again after it was killed"
+            Check (@(& $inSession).Count -ge 1) "service started it again after it was killed"
+
+            Add-Type @"
+          using System; using System.Runtime.InteropServices; using System.Text; using System.Collections.Generic;
+          public class W {
+            public delegate bool EnumProc(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [StructLayout(LayoutKind.Sequential)] public struct R { public int L,T,Rt,B; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
+            [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+            public static List<KeyValuePair<string,IntPtr>> Of(uint pid) { var r = new List<KeyValuePair<string,IntPtr>>(); EnumWindows((h,l)=>{ uint p; GetWindowThreadProcessId(h, out p); if (p==pid){ var c=new StringBuilder(64); GetClassName(h,c,64); r.Add(new KeyValuePair<string,IntPtr>(c.ToString(),h)); } return true; }, IntPtr.Zero); return r; }
+            public static IntPtr Find(uint pid, string cls) { foreach (var kv in Of(pid)) if (kv.Key==cls) return kv.Value; return IntPtr.Zero; }
+          }
+          "@
+            # The manager closes it on purpose (tray "Exit"): the service leaves the session alone.
+            $owner = @(& $inSession)[0]
+            [void][W]::PostMessage([W]::Find([uint32]$owner.Id, 'OverlayMgrAppWnd'), 0x0111, [IntPtr]102, [IntPtr]::Zero)
+            Start-Sleep 3
+            Check ($owner.HasExited -or -not (Get-Process -Id $owner.Id -ErrorAction SilentlyContinue)) "manager's Exit closes it"
+            Check (Test-Path "$data\session-$($owner.SessionId).exited") "exit leaves a note for the service"
+            Start-Sleep 15
+            Check (@(& $inSession).Count -eq 0) "service does not restart it after the manager's Exit"
+
+            # Another user: a standard account, same session (via runas).
+            $pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 16 | ForEach-Object { [char]$_ }) + 'aA1!'
+            net user omviewer $pw /add | Out-Null
+            $cred = New-Object PSCredential('omviewer', (ConvertTo-SecureString $pw -AsPlainText -Force))
+            $v = Start-Process $pf -ArgumentList '/minimized' -Credential $cred -LoadUserProfile -WorkingDirectory (Split-Path $pf) -PassThru
+            Start-Sleep 8
+            Check (-not $v.HasExited) "another user's copy runs"
+            $wins = [W]::Of([uint32]$v.Id)
+            ($wins | ForEach-Object { $_.Key }) -join ', '
+            $ov = [W]::Find([uint32]$v.Id, 'OverlayMgrOverlayWnd')
+            Check ($ov -ne [IntPtr]::Zero -and [W]::IsWindowVisible($ov)) "another user sees the layer"
+            Check ([W]::Find([uint32]$v.Id, 'OverlayMgrManagerWnd') -eq [IntPtr]::Zero) "another user gets no settings window"
+            $r1 = New-Object W+R; [void][W]::GetWindowRect($ov, [ref]$r1)
+
+            # The manager moves the layer: it moves on the other user's screen too.
+            $ini = "$data\config.ini"
+            (Get-Content $ini -Raw -Encoding Unicode) -replace 'OffsetX=[0-9.]+', 'OffsetX=30.00' | Set-Content $ini -Encoding Unicode -NoNewline
+            Start-Sleep 6
+            $ov2 = [W]::Find([uint32]$v.Id, 'OverlayMgrOverlayWnd')
+            $r2 = New-Object W+R; [void][W]::GetWindowRect($ov2, [ref]$r2)
+            "layer x before: $($r1.L)  after: $($r2.L)"
+            Check ($r2.L -ne $r1.L) "the manager's change shows up for the other user"
+
+            # The other user cannot close it from outside either.
+            [void][W]::PostMessage([W]::Find([uint32]$v.Id, 'OverlayMgrAppWnd'), 0x0111, [IntPtr]102, [IntPtr]::Zero)
+            Start-Sleep 3
+            Check (-not $v.HasExited) "another user's copy ignores Exit"
+            $v | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep 1
           } else {
             "no active session on this runner: launch-into-session not tested here"
           }
