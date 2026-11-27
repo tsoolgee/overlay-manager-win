@@ -5,7 +5,7 @@
 // whole trick: the running copy moves aside to "<exe>.old", the new one takes
 // its name, and the next launch — or an immediate restart — runs it.
 //
-// For tests only, FLOATY_UPDATE_API points the check at another "latest
+// For tests only, OVERLAY_MANAGER_UPDATE_API points the check at another "latest
 // release" URL; plain http is then allowed for 127.0.0.1 / localhost, so a
 // local server can stand in for GitHub and serve broken downloads on purpose.
 #pragma once

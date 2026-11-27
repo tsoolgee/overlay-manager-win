@@ -1,22 +1,22 @@
-# Builds Floaty-offline.exe: Floaty.exe with Microsoft's WebView2 Fixed Version
+# Builds OverlayManager-offline.exe: OverlayManager.exe with Microsoft's WebView2 Fixed Version
 # runtime appended, for a Windows 10 machine with no internet and no runtime.
 # The program reads the .cab back from its own tail (see src/runtime.cpp).
 #
-#   tools/make-offline.ps1 -Exe build/Release/Floaty.exe -Cab <Microsoft.WebView2.FixedVersionRuntime.*.x64.cab> [-Out <path>]
+#   tools/make-offline.ps1 -Exe build/Release/OverlayManager.exe -Cab <Microsoft.WebView2.FixedVersionRuntime.*.x64.cab> [-Out <path>]
 #
 # -Cab is Microsoft's package as downloaded from
 # https://developer.microsoft.com/microsoft-edge/webview2/ (Fixed Version, x64);
 # its signature is checked. The runtime is then slimmed and packed again:
 #   - Locales: only he and en-US (the rest is ~135 MB of other languages);
 #   - WidevineCdm: the DRM module for protected video, never used here;
-#   - EBWebView\x86: the 32-bit host side; Floaty is 64-bit;
+#   - EBWebView\x86: the 32-bit host side; Overlay Manager is 64-bit;
 # and recompressed with LZX:21 (Microsoft ships it with the weaker MSZIP).
 # expand.exe, which unpacks it on the target, reads LZX.
 # ASCII only: Windows PowerShell 5.1 reads it as ANSI.
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
     [Parameter(Mandatory = $true)][string]$Cab,
-    [string]$Out = (Join-Path (Split-Path $Exe) 'Floaty-offline.exe')
+    [string]$Out = (Join-Path (Split-Path $Exe) 'OverlayManager-offline.exe')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -30,7 +30,7 @@ if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Micr
 # user profile, say) would not survive. The output folder must be plain ASCII.
 $outDir = Split-Path ([IO.Path]::GetFullPath($Out))
 if ($outDir -match '[^ -~]') { throw "Put -Out in a folder whose path is plain ASCII: $outDir" }
-$work = Join-Path $outDir ("floaty-offline-work-" + [guid]::NewGuid().ToString('N'))
+$work = Join-Path $outDir ("overlaymanager-offline-work-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $work | Out-Null
 try {
     $tree = Join-Path $work 'tree'
@@ -76,7 +76,7 @@ try {
             try { $in.CopyTo($stream, 4MB) } finally { $in.Dispose() }
         }
         # Trailer: 16-byte magic (15 chars + NUL), then the .cab size as a little-endian uint64.
-        $magic = [Text.Encoding]::ASCII.GetBytes('FloatyRuntime01') + [byte]0
+        $magic = [Text.Encoding]::ASCII.GetBytes('OvlMgrRuntime01') + [byte]0
         $stream.Write($magic, 0, 16)
         $size = [BitConverter]::GetBytes([uint64]$cabSize)
         $stream.Write($size, 0, 8)

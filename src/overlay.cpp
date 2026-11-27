@@ -22,7 +22,7 @@ using namespace Gdiplus;
 
 namespace {
 
-const wchar_t* kOverlayClass = L"FloatyOverlayWnd";
+const wchar_t* kOverlayClass = L"OverlayMgrOverlayWnd";
 const int kGripSize = 18;  // resize corner, in pixels
 const int kMinSide = 16;
 const double kPi = 3.14159265358979323846;
@@ -979,7 +979,7 @@ void OverlayWindow::TimerMenu() {
     const bool autoStart = timerHooks_.autoStart && timerHooks_.autoStart();
     AppendMenuW(menu, MF_STRING | (autoStart ? MF_CHECKED : 0), kAuto, L"הפעלה עם Windows");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kOpen, L"הגדרות ב-Floaty");
+    AppendMenuW(menu, MF_STRING, kOpen, L"הגדרות ב-Overlay Manager");
 
     POINT pt;
     GetCursorPos(&pt);

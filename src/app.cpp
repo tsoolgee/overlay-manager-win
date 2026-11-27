@@ -15,9 +15,9 @@
 
 namespace {
 
-const wchar_t* kHiddenClass = L"FloatyAppWnd";
-const wchar_t* kMutexName = L"Floaty_SingleInstanceMutex";
-const wchar_t* kAppName = L"Floaty";
+const wchar_t* kHiddenClass = L"OverlayMgrAppWnd";
+const wchar_t* kMutexName = L"OverlayManager_SingleInstanceMutex";
+const wchar_t* kAppName = L"Overlay Manager";
 
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_UPDATE_DONE = WM_APP + 2;   // lParam: UpdateResult*, owned by the receiver

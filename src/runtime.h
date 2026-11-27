@@ -1,11 +1,11 @@
 // runtime.h — where the WebView2 runtime that draws the manager window comes from.
 //
 // Windows 11 and an up-to-date Windows 10 have the Evergreen runtime installed;
-// Floaty uses it. A Windows 10 that never went online may not, so
-// Floaty-offline.exe carries Microsoft's Fixed Version runtime (a .cab) appended
+// Overlay Manager uses it. A Windows 10 that never went online may not, so
+// OverlayManager-offline.exe carries Microsoft's Fixed Version runtime (a .cab) appended
 // to the executable. On such a machine it is unpacked once into
-// %LOCALAPPDATA%\Floaty\WebView2Runtime and used from there; a later, smaller
-// Floaty.exe (an update) keeps finding it in the same place.
+// %LOCALAPPDATA%\OverlayManager\WebView2Runtime and used from there; a later, smaller
+// OverlayManager.exe (an update) keeps finding it in the same place.
 #pragma once
 
 #include <windows.h>
@@ -25,7 +25,7 @@ struct RuntimeChoice {
 RuntimeChoice ChooseWebView2Runtime(HWND owner);
 
 // Explains a missing runtime: a download link for a connected machine, and
-// Floaty-offline.exe for one without internet.
+// OverlayManager-offline.exe for one without internet.
 void ReportMissingRuntime(HWND owner);
 
 // The runtime is there but could not be prepared or started.

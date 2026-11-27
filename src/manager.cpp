@@ -18,8 +18,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-const wchar_t* kManagerClass = L"FloatyManagerWnd";
-const wchar_t* kTitle = L"Floaty";
+const wchar_t* kManagerClass = L"OverlayMgrManagerWnd";
+const wchar_t* kTitle = L"Overlay Manager - ניהול חותמות צפות";
 
 // The page ships inside the executable as an RCDATA resource, so there is a
 // single file to distribute and nothing to go missing next to it.

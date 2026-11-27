@@ -21,8 +21,8 @@ IDR_STICKER_VIDEOFF RCDATA "stickers/videoff.png"
 IDR_STICKER_HASINUN RCDATA "stickers/hasinun-hasofi.jpg"
 
 VS_VERSION_INFO VERSIONINFO
-  FILEVERSION     FLOATY_VERSION_RC
-  PRODUCTVERSION  FLOATY_VERSION_RC
+  FILEVERSION     OVERLAY_MANAGER_VERSION_RC
+  PRODUCTVERSION  OVERLAY_MANAGER_VERSION_RC
   FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
   FILEFLAGS       0
   FILEOS          VOS_NT_WINDOWS32
@@ -34,12 +34,12 @@ BEGIN
     BLOCK "040904b0"
     BEGIN
       VALUE "CompanyName",      "tsoolgee"
-      VALUE "FileDescription",  "Floaty - floating image overlays"
-      VALUE "FileVersion",      FLOATY_VERSION_STR
-      VALUE "InternalName",     "Floaty"
-      VALUE "OriginalFilename", "Floaty.exe"
-      VALUE "ProductName",      "Floaty"
-      VALUE "ProductVersion",   FLOATY_VERSION_STR
+      VALUE "FileDescription",  "Overlay Manager - floating image overlays"
+      VALUE "FileVersion",      OVERLAY_MANAGER_VERSION_STR
+      VALUE "InternalName",     "OverlayManager"
+      VALUE "OriginalFilename", "OverlayManager.exe"
+      VALUE "ProductName",      "Overlay Manager"
+      VALUE "ProductVersion",   OVERLAY_MANAGER_VERSION_STR
       VALUE "LegalCopyright",   "MIT License"
     END
   END

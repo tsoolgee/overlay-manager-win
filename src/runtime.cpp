@@ -18,16 +18,16 @@
 
 namespace {
 
-// Floaty-offline.exe is Floaty.exe + the runtime's .cab + this trailer, so the
-// two builds share one program and Floaty.exe stays small for updates.
-const char kMagic[16] = "FloatyRuntime01";
+// OverlayManager-offline.exe is OverlayManager.exe + the runtime's .cab + this trailer, so the
+// two builds share one program and OverlayManager.exe stays small for updates.
+const char kMagic[16] = "OvlMgrRuntime01";
 struct Trailer {
     char magic[16];
     uint64_t size;  // bytes of .cab right before the trailer
 };
 static_assert(sizeof(Trailer) == 24, "the trailer is written by tools/make-offline.ps1");
 
-const wchar_t* kTitle = L"Floaty";
+const wchar_t* kTitle = L"Overlay Manager";
 const wchar_t* kReleases = L"https://github.com/tsoolgee/overlay-manager-win/releases/latest";
 // Microsoft's Evergreen bootstrapper: a small download that installs the runtime.
 const wchar_t* kBootstrapper = L"https://go.microsoft.com/fwlink/p/?LinkId=2124703";
@@ -37,7 +37,7 @@ std::wstring RuntimeRoot() {
     // domain profile around.
     wchar_t local[MAX_PATH] = {0};
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local))) return L"";
-    return std::wstring(local) + L"\\Floaty\\WebView2Runtime";
+    return std::wstring(local) + L"\\OverlayManager\\WebView2Runtime";
 }
 
 bool IsRuntime(const wchar_t* folder) {
@@ -199,7 +199,7 @@ void Unpack(UnpackJob& job) {
     // 1. Copy the .cab out of this executable.
     {
         HANDLE in = OpenForRead(job.exe);
-        if (in == INVALID_HANDLE_VALUE) return fail(LastError(L"קריאת Floaty"));
+        if (in == INVALID_HANDLE_VALUE) return fail(LastError(L"קריאת Overlay Manager"));
         HANDLE out = CreateFileW(cab.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                                  FILE_ATTRIBUTE_NORMAL, nullptr);
         if (out == INVALID_HANDLE_VALUE) {
@@ -309,11 +309,11 @@ RuntimeChoice ChooseWebView2Runtime(HWND owner) {
     RuntimeChoice choice;
 
     // The installed runtime keeps itself up to date: always the first choice.
-    // FLOATY_PRIVATE_RUNTIME=1 skips it, to test the bundled one on a machine
+    // OVERLAY_MANAGER_PRIVATE_RUNTIME=1 skips it, to test the bundled one on a machine
     // that has both.
     wchar_t force[8] = {0};
     const bool skipSystem =
-        GetEnvironmentVariableW(L"FLOATY_PRIVATE_RUNTIME", force, 8) > 0 && force[0] == L'1';
+        GetEnvironmentVariableW(L"OVERLAY_MANAGER_PRIVATE_RUNTIME", force, 8) > 0 && force[0] == L'1';
     if (!skipSystem && IsRuntime(nullptr)) {
         choice.source = RuntimeSource::System;
         return choice;
@@ -346,9 +346,9 @@ RuntimeChoice ChooseWebView2Runtime(HWND owner) {
     tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
     tc.pszWindowTitle = kTitle;
     tc.pszMainIcon = MAKEINTRESOURCEW(IDI_APP);
-    tc.pszMainInstruction = L"מכין את Floaty בפעם הראשונה";
+    tc.pszMainInstruction = L"מכין את Overlay Manager בפעם הראשונה";
     tc.pszContent =
-        L"רכיב התצוגה של מיקרוסופט ארוז בתוך Floaty, ועכשיו הוא נפרס במחשב. "
+        L"רכיב התצוגה של מיקרוסופט ארוז בתוך Overlay Manager, ועכשיו הוא נפרס במחשב. "
         L"זה קורה פעם אחת בלבד ולוקח עד דקה.";
     tc.pfCallback = ProgressProc;
     tc.lpCallbackData = reinterpret_cast<LONG_PTR>(&job);
@@ -378,14 +378,14 @@ RuntimeChoice ChooseWebView2Runtime(HWND owner) {
 
 void ReportMissingRuntime(HWND owner) {
     const TASKDIALOG_BUTTON buttons[] = {
-        {1001, L"להוריד את הרכיב מאתר מיקרוסופט\nצריך אינטרנט. אחרי ההתקנה פותחים את Floaty שוב"},
+        {1001, L"להוריד את הרכיב מאתר מיקרוסופט\nצריך אינטרנט. אחרי ההתקנה פותחים את Overlay Manager שוב"},
     };
     std::wstring content =
-        L"חלון הניהול של Floaty מוצג בעזרת רכיב WebView2 של מיקרוסופט, "
+        L"חלון הניהול של Overlay Manager מוצג בעזרת רכיב WebView2 של מיקרוסופט, "
         L"והוא לא מותקן במחשב הזה.\n\n"
         L"במחשב בלי אינטרנט: הורידו ממחשב אחר את <a href=\"";
     content += kReleases;
-    content += L"\">Floaty-offline.exe</a>. הרכיב ארוז בתוכו.";
+    content += L"\">OverlayManager-offline.exe</a>. הרכיב ארוז בתוכו.";
 
     TASKDIALOGCONFIG tc{};
     tc.cbSize = sizeof tc;
@@ -409,7 +409,7 @@ void ReportMissingRuntime(HWND owner) {
 
 void ReportRuntimeError(HWND owner, const std::wstring& what) {
     std::wstring content = what;
-    content += L"\n\nאפשר לנסות לפתוח את Floaty שוב. אם זה חוזר, ";
+    content += L"\n\nאפשר לנסות לפתוח את Overlay Manager שוב. אם זה חוזר, ";
     content += L"<a href=\"https://github.com/tsoolgee/overlay-manager-win/issues\">ספרו לנו</a>.";
     TASKDIALOGCONFIG tc{};
     tc.cbSize = sizeof tc;

@@ -4,7 +4,7 @@
 
 namespace {
 const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const wchar_t* kRunValue = L"Floaty";
+const wchar_t* kRunValue = L"OverlayManagerApp";
 }  // namespace
 
 std::string ToUtf8(const std::wstring& s) {

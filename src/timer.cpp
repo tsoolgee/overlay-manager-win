@@ -243,7 +243,7 @@ bool Parse(const std::wstring& text, int& seconds) {
 
 namespace {
 
-const wchar_t* kAskClass = L"FloatyAskTime";
+const wchar_t* kAskClass = L"OverlayMgrAskTime";
 constexpr int kEditId = 100;
 
 struct Ask {
@@ -340,7 +340,7 @@ bool AskTime(HWND owner, const std::wstring& title, int initial, int& out) {
     MONITORINFO mi{sizeof mi};
     GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTOPRIMARY), &mi);
     const RECT& wa = mi.rcWork;
-    HWND dlg = CreateWindowExW(ex, kAskClass, L"Floaty", style,
+    HWND dlg = CreateWindowExW(ex, kAskClass, L"Overlay Manager", style,
                                wa.left + (wa.right - wa.left - w) / 2,
                                wa.top + (wa.bottom - wa.top - h) / 2, w, h, owner, nullptr,
                                inst, &ask);
