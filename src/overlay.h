@@ -33,13 +33,23 @@ struct Geometry {
     int height;
 };
 
+// What a timer layer (timer.h) needs from the app: its state changed (save
+// for a deliberate change, not for every tick), and the menu's app-wide items.
+struct TimerHooks {
+    std::function<void(int index, const Layer& layer, bool save)> changed;
+    std::function<bool()> autoStart;
+    std::function<void()> toggleAutoStart;
+    std::function<void(int index)> openManager;
+};
+
 class OverlayWindow {
 public:
     using GeometryFn = std::function<void(int index, const Geometry&)>;
 
     static void RegisterWindowClass(HINSTANCE inst);
 
-    OverlayWindow(HINSTANCE inst, int index, const Layer& layer, GeometryFn onGeometry);
+    OverlayWindow(HINSTANCE inst, int index, const Layer& layer, GeometryFn onGeometry,
+                  TimerHooks timerHooks = {});
     ~OverlayWindow();
 
     OverlayWindow(const OverlayWindow&) = delete;
@@ -50,6 +60,7 @@ public:
     void Update(const Layer& layer);
 
     void SetIndex(int index) { index_ = index; }
+    HWND Hwnd() const { return hwnd_; }
     void SetHiddenByHotkey(bool hidden);
     void SetPositionMode(bool on);
     bool PositionMode() const { return positionMode_; }
@@ -66,7 +77,15 @@ private:
     void ApplyVisibility();
     void ApplyClickThrough();
     RECT ComputeRect() const;
+    RECT AnchoredRect(SIZE extent) const;
     SIZE RotatedExtent() const;
+
+    // The kiosk timer, when the layer is one (timer.h).
+    LRESULT HandleTimer(UINT msg, WPARAM wp, LPARAM lp, bool& handled);
+    void TimerTick();
+    void TimerMenu();
+    void TimerChanged(bool save);
+    double TimerScale() const;
 
     HINSTANCE inst_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -88,6 +107,21 @@ private:
     Grab grab_ = Grab::None;
     POINT grabOrigin_{};
     RECT grabRect_{};
+    SIZE grabSize_{};     // the layer's own size when the grab began
+    SIZE grabExtent_{};   // its window (the rotated bounding box) at that moment
+
+    TimerHooks timerHooks_;
+    bool timer_ = false;
+    bool expanded_ = false;      // hovered: the full panel instead of the bar
+    int hoverPart_ = 0;          // timerface::Part under the mouse
+    bool tracking_ = false;      // TrackMouseEvent armed for WM_MOUSELEAVE
+    bool pressing_ = false, dragged_ = false;
+    int pressPart_ = 0;
+    POINT pressCursor_{};
+    RECT pressRect_{};
+    unsigned long long lastTick_ = 0;
+    long long shownRemain_ = -1, shownUsed_ = -1;
+    double reportedRemain_ = -1, reportedUsed_ = -1;  // what the app last heard
 };
 
 // Starts and stops GDI+ for the process.
@@ -104,3 +138,15 @@ inline int BgKey(const Layer& l) { return l.removeBg ? l.bgTolerance : 0; }
 
 // Native pixel size of an image file, for the aspect-ratio lock.
 bool ImagePixelSize(const std::wstring& path, int& outW, int& outH);
+
+// Pictures built into the program, offered next to choosing a file. A layer
+// that uses one stores "sticker:<name>" as its image, so it keeps working when
+// no copy of the picture exists on the disk.
+enum class StickerGroup { All, Main, More };
+std::vector<std::wstring> StickerNames(StickerGroup group = StickerGroup::All);
+bool IsStickerPath(const std::wstring& image);
+std::wstring StickerPath(const std::wstring& name);
+// The width a layer gets when this sticker is picked; 0 if it is not a sticker.
+int StickerDefaultWidth(const std::wstring& image);
+// Its usual place (anchored bottom-left), in percent; false if not a sticker.
+bool StickerDefaultPlace(const std::wstring& image, double& offX, double& offY);

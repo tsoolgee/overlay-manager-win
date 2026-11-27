@@ -12,16 +12,22 @@
 #include <memory>
 #include <vector>
 
+#include <shlwapi.h>
+
+#include "resource.h"
+#include "timer.h"
 #include "util.h"
 
 using namespace Gdiplus;
 
 namespace {
 
-const wchar_t* kOverlayClass = L"OverlayMgrOverlayWnd";
+const wchar_t* kOverlayClass = L"FloatyOverlayWnd";
 const int kGripSize = 18;  // resize corner, in pixels
 const int kMinSide = 16;
 const double kPi = 3.14159265358979323846;
+const UINT_PTR kTickTimer = 1;      // the kiosk timer's clock
+const UINT_PTR kCollapseTimer = 2;  // closes its panel a moment after the mouse leaves
 
 ULONG_PTR g_gdiplusToken = 0;
 std::vector<MonitorInfo> g_monitors;
@@ -208,8 +214,89 @@ static Bitmap* DecodeWithWic(const std::wstring& path) {
     return out;
 }
 
-static std::unique_ptr<Bitmap> OpenImageFile(const std::wstring& path) {
+static std::unique_ptr<Bitmap> InMemoryCopy(Bitmap& src);
+
+namespace {
+// width: the size a layer gets when the sticker is picked (height follows the
+// picture's proportions). more: offered under "more stickers", in a picker of
+// its own, rather than as a tile of its own next to the file button.
+// offX/offY: its usual place, from the bottom-left corner, in percent.
+struct StickerDef { const wchar_t* name; int id; int width; bool more; double offX, offY; };
+const StickerDef kStickers[] = {
+    {L"out-net", IDR_STICKER_OUTNET, 170, false, 0.0, 5.0},
+    {L"wifree", IDR_STICKER_WIFREE, 200, false, 0.0, 5.0},
+    {L"netiv", IDR_STICKER_NETIV, 200, true, 1.0, 6.5},
+    {L"videoff-logo", IDR_STICKER_VIDEOFF_LOGO, 220, true, 0.0, 5.0},
+    {L"videoff", IDR_STICKER_VIDEOFF, 270, true, 0.0, 5.0},
+    {L"הסינון הסופי", IDR_STICKER_HASINUN, 200, true, 0.0, 5.0},
+};
+const wchar_t kStickerPrefix[] = L"sticker:";
+}  // namespace
+
+std::vector<std::wstring> StickerNames(StickerGroup group) {
+    std::vector<std::wstring> out;
+    for (const auto& s : kStickers)
+        if (group == StickerGroup::All || s.more == (group == StickerGroup::More))
+            out.push_back(s.name);
+    return out;
+}
+
+bool IsStickerPath(const std::wstring& image) { return image.rfind(kStickerPrefix, 0) == 0; }
+
+std::wstring StickerPath(const std::wstring& name) { return kStickerPrefix + name; }
+
+bool StickerDefaultPlace(const std::wstring& image, double& offX, double& offY) {
+    if (!IsStickerPath(image)) return false;
+    const std::wstring name = image.substr(wcslen(kStickerPrefix));
+    for (const auto& s : kStickers)
+        if (name == s.name) {
+            offX = s.offX;
+            offY = s.offY;
+            return true;
+        }
+    return false;
+}
+
+int StickerDefaultWidth(const std::wstring& image) {
+    if (!IsStickerPath(image)) return 0;
+    const std::wstring name = image.substr(wcslen(kStickerPrefix));
+    for (const auto& s : kStickers)
+        if (name == s.name) return s.width;
+    return 0;
+}
+
+// A built-in sticker, decoded from the PNG embedded in the executable. GDI+
+// reads a stream-backed Bitmap lazily, so the stream must outlive it — unless
+// the pixels are copied out, which `copy` does for anything that keeps it.
+static std::unique_ptr<Bitmap> OpenSticker(const std::wstring& name, bool copy) {
+    int id = 0;
+    for (const auto& s : kStickers)
+        if (name == s.name) id = s.id;
+    if (!id) return nullptr;
+    HRSRC res = FindResourceW(nullptr, MAKEINTRESOURCEW(id), RT_RCDATA);
+    HGLOBAL mem = res ? LoadResource(nullptr, res) : nullptr;
+    const void* bytes = mem ? LockResource(mem) : nullptr;
+    const DWORD size = res ? SizeofResource(nullptr, res) : 0;
+    if (!bytes || !size) return nullptr;
+    IStream* stream = SHCreateMemStream(static_cast<const BYTE*>(bytes), size);
+    if (!stream) return nullptr;
+    std::unique_ptr<Bitmap> bmp(Bitmap::FromStream(stream));
+    std::unique_ptr<Bitmap> out;
+    if (bmp && bmp->GetLastStatus() == Ok) {
+        if (copy)
+            out = InMemoryCopy(*bmp);
+        else  // only the size is wanted, and it is read before the stream goes
+            out = std::make_unique<Bitmap>((INT)bmp->GetWidth(), (INT)bmp->GetHeight(), PixelFormat32bppARGB);
+    }
+    bmp.reset();
+    stream->Release();
+    return out;
+}
+
+static std::unique_ptr<Bitmap> OpenImageFile(const std::wstring& path, bool forDrawing = true) {
     if (path.empty()) return nullptr;
+    if (IsStickerPath(path)) return OpenSticker(path.substr(wcslen(kStickerPrefix)), forDrawing);
+    if (IsTimerImage(path)) return timerface::Preview();
     std::unique_ptr<Bitmap> bmp(Bitmap::FromFile(path.c_str(), FALSE));
     if (bmp && bmp->GetLastStatus() == Ok) return bmp;
     return std::unique_ptr<Bitmap>(DecodeWithWic(path));
@@ -313,18 +400,45 @@ static std::unique_ptr<Bitmap> RemoveBackground(Bitmap& src, int tolerance) {
     return out;
 }
 
-// The layer's picture as it will be drawn: decoded, and with the background
-// cleared when bgTolerance > 0.
+// A Bitmap that GDI+ opened from a file keeps that file open for as long as it
+// lives, and the open blocks writes, renames and deletes: while a layer was on
+// screen its picture could not be saved over from an image editor. This copies
+// the pixels into a bitmap of its own, so the file is let go of right away.
+static std::unique_ptr<Bitmap> InMemoryCopy(Bitmap& src) {
+    const int w = (int)src.GetWidth(), h = (int)src.GetHeight();
+    if (w <= 0 || h <= 0) return nullptr;
+    auto out = std::make_unique<Bitmap>(w, h, PixelFormat32bppARGB);
+    if (out->GetLastStatus() != Ok) return nullptr;
+
+    Rect rc(0, 0, w, h);
+    BitmapData from{}, to{};
+    if (src.LockBits(&rc, ImageLockModeRead, PixelFormat32bppARGB, &from) != Ok) return nullptr;
+    if (out->LockBits(&rc, ImageLockModeWrite, PixelFormat32bppARGB, &to) != Ok) {
+        src.UnlockBits(&from);
+        return nullptr;
+    }
+    for (int y = 0; y < h; ++y)
+        memcpy(static_cast<BYTE*>(to.Scan0) + (size_t)y * to.Stride,
+               static_cast<BYTE*>(from.Scan0) + (size_t)y * from.Stride, (size_t)w * 4);
+    out->UnlockBits(&to);
+    src.UnlockBits(&from);
+    return out;
+}
+
+// The layer's picture as it will be drawn: decoded, with the background
+// cleared when bgTolerance > 0, and never holding the file open.
 static std::unique_ptr<Bitmap> OpenLayerImage(const std::wstring& path, int bgTolerance) {
     auto bmp = OpenImageFile(path);
-    if (bmp && bgTolerance > 0)
+    if (!bmp) return nullptr;
+    if (bgTolerance > 0)
         if (auto cleared = RemoveBackground(*bmp, bgTolerance)) return cleared;
-    return bmp;
+    if (auto copy = InMemoryCopy(*bmp)) return copy;
+    return bmp;  // out of memory for a copy: draw it anyway, file stays locked
 }
 
 bool ImagePixelSize(const std::wstring& path, int& outW, int& outH) {
     if (path.empty()) return false;
-    auto bmp = OpenImageFile(path);
+    auto bmp = OpenImageFile(path, false);
     if (!bmp) return false;
     outW = (int)bmp->GetWidth();
     outH = (int)bmp->GetHeight();
@@ -390,8 +504,9 @@ void OverlayWindow::RegisterWindowClass(HINSTANCE inst) {
 }
 
 OverlayWindow::OverlayWindow(HINSTANCE inst, int index, const Layer& layer,
-                             GeometryFn onGeometry)
-    : inst_(inst), index_(index), layer_(layer), onGeometry_(std::move(onGeometry)) {
+                             GeometryFn onGeometry, TimerHooks timerHooks)
+    : inst_(inst), index_(index), layer_(layer), onGeometry_(std::move(onGeometry)),
+      timerHooks_(std::move(timerHooks)) {
     hwnd_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
                                 WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
                             kOverlayClass, L"", WS_POPUP, 0, 0, 10, 10, nullptr,
@@ -414,7 +529,21 @@ OverlayWindow::~OverlayWindow() {
 void OverlayWindow::Update(const Layer& layer) {
     const bool imageChanged = layer.image != loadedPath_ || BgKey(layer) != loadedBg_;
     const bool clickThroughChanged = layer.clickThrough != layer_.clickThrough;
+    // The app's copy of a running timer trails this one by under a second.
+    // Unless the app changed the time itself, keep counting from the live
+    // value, or every edit in the manager window would knock it back.
+    const bool keepClock = timer_ && IsTimerImage(layer.image) &&
+                           layer.timerRemaining == reportedRemain_ &&
+                           layer.timerUsed == reportedUsed_;
+    const double remaining = layer_.timerRemaining, used = layer_.timerUsed;
     layer_ = layer;
+    if (keepClock) {
+        layer_.timerRemaining = remaining;
+        layer_.timerUsed = used;
+    } else if (timer_) {
+        reportedRemain_ = layer_.timerRemaining;
+        reportedUsed_ = layer_.timerUsed;
+    }
     if (imageChanged) LoadLayerImage();
     if (clickThroughChanged && !positionMode_) ApplyClickThrough();
     Render();
@@ -440,7 +569,8 @@ void OverlayWindow::ApplyClickThrough() {
     // Position mode must receive clicks, so WS_EX_TRANSPARENT comes off for as
     // long as it lasts and goes back afterwards.
     LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
-    if (positionMode_ || !layer_.clickThrough)
+    // The timer always takes the mouse: hovering opens it, a right click its menu.
+    if (positionMode_ || !layer_.clickThrough || timer_)
         ex &= ~WS_EX_TRANSPARENT;
     else
         ex |= WS_EX_TRANSPARENT;
@@ -454,7 +584,24 @@ void OverlayWindow::LoadLayerImage() {
     loadedBg_ = BgKey(layer_);
     bitmap_.reset();
     imageW_ = imageH_ = 0;
-    if (loadedPath_.empty()) return;
+
+    const bool wasTimer = timer_;
+    timer_ = IsTimerImage(loadedPath_);
+    if (timer_ != wasTimer && hwnd_) {
+        if (timer_) {
+            lastTick_ = GetTickCount64();
+            shownRemain_ = shownUsed_ = -1;
+            reportedRemain_ = layer_.timerRemaining;
+            reportedUsed_ = layer_.timerUsed;
+            SetTimer(hwnd_, kTickTimer, 250, nullptr);
+        } else {
+            KillTimer(hwnd_, kTickTimer);
+            KillTimer(hwnd_, kCollapseTimer);
+            expanded_ = false;
+        }
+        ApplyClickThrough();
+    }
+    if (timer_ || loadedPath_.empty()) return;
 
     auto* bmp = OpenLayerImage(loadedPath_, loadedBg_).release();
     if (!bmp) return;
@@ -476,8 +623,26 @@ SIZE OverlayWindow::RotatedExtent() const {
 }
 
 RECT OverlayWindow::ComputeRect() const {
+    if (!timer_) return AnchoredRect(RotatedExtent());
+
+    // The bar sits where the anchor puts it; the panel grows away from the
+    // anchored edges, so a timer in a right or bottom corner opens inwards,
+    // and it is kept on its screen.
+    const double sc = TimerScale();
+    const SIZE bar = timerface::Size(false, sc);
+    RECT r = AnchoredRect(bar);
+    if (!expanded_) return r;
+    const SIZE panel = timerface::Size(true, sc);
+    int x = layer_.anchorH == ANCHOR_RIGHT ? r.right - panel.cx : r.left;
+    int y = layer_.anchorV == ANCHOR_BOTTOM ? r.bottom - panel.cy : r.top;
     const MonitorInfo& mon = MonitorAt(layer_.monitor);
-    const SIZE extent = RotatedExtent();
+    x = std::max<int>(mon.rect.left, std::min<int>(x, mon.rect.right - panel.cx));
+    y = std::max<int>(mon.rect.top, std::min<int>(y, mon.rect.bottom - panel.cy));
+    return RECT{x, y, x + panel.cx, y + panel.cy};
+}
+
+RECT OverlayWindow::AnchoredRect(SIZE extent) const {
+    const MonitorInfo& mon = MonitorAt(layer_.monitor);
 
     const int dx = (int)std::lround(mon.width * layer_.offsetX / 100.0);
     const int dy = (int)std::lround(mon.height * layer_.offsetY / 100.0);
@@ -530,7 +695,10 @@ void OverlayWindow::Render() {
         g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
         g.Clear(Color(0, 0, 0, 0));
 
-        if (positionMode_) {
+        if (timer_) {
+            timerface::Draw(g, expanded_, TimerScale(), (timerface::Part)hoverPart_,
+                            layer_.timerRemaining, layer_.timerUsed);
+        } else if (positionMode_) {
             // A faint scrim makes the whole layer grabbable: a layered window
             // only hit-tests where alpha is non-zero, so a mostly transparent
             // watermark would otherwise be almost impossible to click.
@@ -541,12 +709,18 @@ void OverlayWindow::Render() {
         const int lw = std::max(kMinSide, layer_.width);
         const int lh = std::max(kMinSide, layer_.height);
 
-        if (bitmap_ && imageW_ > 0 && imageH_ > 0) {
+        if (timer_) {
+            // drawn above
+        } else if (bitmap_ && imageW_ > 0 && imageH_ > 0) {
             ImageAttributes attrs;
             ColorMatrix cm = BuildColorMatrix(layer_);
             attrs.SetColorMatrix(&cm, ColorMatrixFlagsDefault, ColorAdjustTypeBitmap);
 
             GraphicsState saved = g.Save();
+            // Pixel centres, not corners: otherwise a scaled picture is drawn
+            // half a pixel off and comes out a little soft. Only for the
+            // picture: the timer's and the frame's 1px lines stay on the grid.
+            g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
             if (std::fabs(layer_.rotation) >= 0.01) {
                 g.TranslateTransform(w / 2.0f, h / 2.0f);
                 g.RotateTransform((REAL)layer_.rotation);
@@ -563,7 +737,7 @@ void OverlayWindow::Render() {
             g.FillRectangle(&fill, 0, 0, w, h);
         }
 
-        if (positionMode_) {
+        if (positionMode_ && !timer_) {
             Pen pen(Color(230, 56, 189, 248), 2.0f);
             pen.SetDashStyle(DashStyleDash);
             g.DrawRectangle(&pen, 1, 1, w - 3, h - 3);
@@ -590,7 +764,10 @@ void OverlayWindow::Render() {
     POINT dst{r.left, r.top};
     POINT src{0, 0};
     SIZE size{w, h};
-    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    // A picture's opacity is in its colour matrix; the timer is drawn, so its
+    // opacity is applied to the whole window instead.
+    const BYTE alpha = timer_ ? (BYTE)std::clamp(layer_.opacity, 0, 255) : 255;
+    BLENDFUNCTION blend{AC_SRC_OVER, 0, alpha, AC_SRC_ALPHA};
     UpdateLayeredWindow(hwnd_, screen, &dst, &size, mem, &src, 0, &blend, ULW_ALPHA);
 
     SelectObject(mem, oldBmp);
@@ -604,12 +781,15 @@ void OverlayWindow::ApplyVisibility() {
     // A layer whose file failed to load draws nothing, so keep its window out
     // of the way entirely — unless it is being positioned, where the scrim is
     // the only thing the user has to grab.
-    const bool hasContent = bitmap_ != nullptr;
+    const bool hasContent = bitmap_ != nullptr || timer_;
     const bool visible =
         layer_.enabled && !hiddenByHotkey_ && (hasContent || positionMode_);
     // SWP_NOACTIVATE leaves focus with whatever the user is actually working in.
-    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+    // SWP_NOZORDER: the stacking between layers is the list order, which the
+    // App sets (RestackOverlays); re-raising here put whichever layer was
+    // edited last on top of the others.
+    SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER |
                      (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
 
@@ -620,6 +800,11 @@ LRESULT CALLBACK OverlayWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 }
 
 LRESULT OverlayWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
+    if (timer_) {
+        bool handled = false;
+        const LRESULT r = HandleTimer(msg, wp, lp, handled);
+        if (handled) return r;
+    }
     switch (msg) {
         case WM_LBUTTONDOWN: {
             if (!positionMode_) break;
@@ -629,6 +814,8 @@ LRESULT OverlayWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             const int h = grabRect_.bottom - grabRect_.top;
             grab_ = (pt.x >= w - kGripSize && pt.y >= h - kGripSize) ? Grab::Resize
                                                                     : Grab::Move;
+            grabSize_ = SIZE{std::max(kMinSide, layer_.width), std::max(kMinSide, layer_.height)};
+            grabExtent_ = SIZE{std::max(1, w), std::max(1, h)};
             GetCursorPos(&grabOrigin_);
             SetCapture(hwnd_);
             return 0;
@@ -676,16 +863,17 @@ LRESULT OverlayWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 layer_.offsetX = mon.width ? ox * 100.0 / mon.width : 0;
                 layer_.offsetY = mon.height ? oy * 100.0 / mon.height : 0;
             } else {
-                // RECT members are LONG; narrow explicitly so std::max has one
-                // type to work with.
-                int nw = std::max(kMinSide, (int)(grabRect_.right - grabRect_.left) + dx);
-                int nh = std::max(kMinSide, (int)(grabRect_.bottom - grabRect_.top) + dy);
-                if (layer_.lockAspect && layer_.width > 0 && layer_.height > 0) {
-                    const double ratio = (double)layer_.height / layer_.width;
-                    nh = std::max(kMinSide, (int)std::lround(nw * ratio));
-                }
-                layer_.width = nw;
-                layer_.height = nh;
+                // Scale the size the layer had when the grab began by how far
+                // the grip moved. The window is the rotated bounding box, so
+                // taking its width as the layer's width (as this used to) grew
+                // a rotated layer on every drag; and working from the grab-time
+                // size keeps a locked aspect ratio from drifting through
+                // repeated rounding.
+                const double sx = (double)(grabExtent_.cx + dx) / grabExtent_.cx;
+                const double sy = (double)(grabExtent_.cy + dy) / grabExtent_.cy;
+                layer_.width = std::max(kMinSide, (int)std::lround(grabSize_.cx * sx));
+                layer_.height = std::max(kMinSide,
+                                         (int)std::lround(grabSize_.cy * (layer_.lockAspect ? sx : sy)));
             }
 
             Render();
@@ -702,6 +890,13 @@ LRESULT OverlayWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
 
+        case WM_CAPTURECHANGED:
+            // The capture went elsewhere mid-drag (a window popped up, the user
+            // switched away): the button-up will not come here, so stop now
+            // rather than keep dragging on plain mouse moves afterwards.
+            grab_ = Grab::None;
+            return 0;
+
         case WM_SETCURSOR:
             if (positionMode_) return TRUE;
             break;
@@ -713,4 +908,259 @@ LRESULT OverlayWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             break;
     }
     return DefWindowProcW(hwnd_, msg, wp, lp);
+}
+
+// --- the kiosk timer -----------------------------------------------------------
+
+double OverlayWindow::TimerScale() const {
+    // The DPI of the screen the timer is on, so it is the same physical size
+    // as the original on a 125% or 150% display.
+    using ForMonitor = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+    static ForMonitor forMonitor = [] {
+        HMODULE shcore = LoadLibraryW(L"shcore.dll");
+        return shcore ? reinterpret_cast<ForMonitor>(GetProcAddress(shcore, "GetDpiForMonitor"))
+                      : nullptr;
+    }();
+    const MonitorInfo& mon = MonitorAt(layer_.monitor);
+    UINT dx = 96, dy = 96;
+    if (forMonitor) {
+        const POINT c{(mon.rect.left + mon.rect.right) / 2, (mon.rect.top + mon.rect.bottom) / 2};
+        if (FAILED(forMonitor(MonitorFromPoint(c, MONITOR_DEFAULTTONEAREST), 0, &dx, &dy)))
+            dx = 96;
+    } else {
+        HDC dc = GetDC(nullptr);
+        dx = (UINT)GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(nullptr, dc);
+    }
+    return std::max(1u, dx) / 96.0;
+}
+
+void OverlayWindow::TimerChanged(bool save) {
+    reportedRemain_ = layer_.timerRemaining;
+    reportedUsed_ = layer_.timerUsed;
+    if (timerHooks_.changed) timerHooks_.changed(index_, layer_, save);
+}
+
+void OverlayWindow::TimerTick() {
+    const unsigned long long now = GetTickCount64();
+    const double dt = (now - lastTick_) / 1000.0;
+    lastTick_ = now;
+    // Counts while the layer is on, also when "hide all" has it off screen:
+    // the time is the session's, not the picture's.
+    if (layer_.enabled && layer_.timerRunning && layer_.timerRemaining > 0) {
+        layer_.timerRemaining = std::max(0.0, layer_.timerRemaining - dt);
+        layer_.timerUsed += dt;
+    }
+    const long long r = (long long)layer_.timerRemaining, u = (long long)layer_.timerUsed;
+    if (r == shownRemain_ && u == shownUsed_) return;
+    shownRemain_ = r;
+    shownUsed_ = u;
+    if (IsWindowVisible(hwnd_)) Render();
+    TimerChanged(false);
+}
+
+void OverlayWindow::TimerMenu() {
+    enum { kSet = 1, kStart, kReset, kPause, kLock, kAuto, kOpen, kAdd = 100, kSub = 200 };
+    HMENU add = CreatePopupMenu();
+    for (int m : {1, 5, 10, 15, 30, 60})
+        AppendMenuW(add, MF_STRING, kAdd + m, (L"+" + std::to_wstring(m)).c_str());
+    AppendMenuW(add, MF_SEPARATOR, 0, nullptr);
+    for (int m : {1, 5, 10})
+        AppendMenuW(add, MF_STRING, kSub + m, (L"-" + std::to_wstring(m)).c_str());
+
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(add), L"הוספת דקות");
+    AppendMenuW(menu, MF_STRING, kSet, L"קביעת זמן...");
+    AppendMenuW(menu, MF_STRING, kStart, L"זמן התחלה (ברירת מחדל)...");
+    AppendMenuW(menu, MF_STRING, kReset, L"איפוס");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (layer_.timerRunning ? 0 : MF_CHECKED), kPause, L"השהיה");
+    AppendMenuW(menu, MF_STRING | (layer_.timerLocked ? MF_CHECKED : 0), kLock, L"נעילת מיקום");
+    const bool autoStart = timerHooks_.autoStart && timerHooks_.autoStart();
+    AppendMenuW(menu, MF_STRING | (autoStart ? MF_CHECKED : 0), kAuto, L"הפעלה עם Windows");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kOpen, L"הגדרות ב-Floaty");
+
+    POINT pt;
+    GetCursorPos(&pt);
+    // Required so the menu closes when the user clicks elsewhere.
+    SetForegroundWindow(hwnd_);
+    const int cmd = (int)TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_LAYOUTRTL, pt.x, pt.y, 0,
+        hwnd_, nullptr);
+    PostMessageW(hwnd_, WM_NULL, 0, 0);
+    DestroyMenu(menu);  // and the submenu with it
+
+    bool changed = true;
+    int v = 0;
+    if (cmd > kAdd && cmd <= kAdd + 60) {
+        layer_.timerRemaining = std::max(0.0, layer_.timerRemaining + (cmd - kAdd) * 60.0);
+    } else if (cmd > kSub && cmd <= kSub + 10) {
+        layer_.timerRemaining = std::max(0.0, layer_.timerRemaining - (cmd - kSub) * 60.0);
+    } else if (cmd == kSet) {
+        changed = timerface::AskTime(hwnd_, L"קביעת הזמן שנותר", (int)layer_.timerRemaining, v);
+        if (changed) layer_.timerRemaining = v;
+    } else if (cmd == kStart) {
+        changed = timerface::AskTime(hwnd_, L"זמן התחלה (ברירת מחדל)", layer_.timerStart, v);
+        if (changed) {  // as in the original: a new start time also resets
+            layer_.timerStart = v;
+            layer_.timerRemaining = v;
+            layer_.timerUsed = 0;
+        }
+    } else if (cmd == kReset) {
+        layer_.timerRemaining = layer_.timerStart;
+        layer_.timerUsed = 0;
+    } else if (cmd == kPause) {
+        layer_.timerRunning = !layer_.timerRunning;
+        lastTick_ = GetTickCount64();
+    } else if (cmd == kLock) {
+        layer_.timerLocked = !layer_.timerLocked;
+    } else {
+        changed = false;
+        if (cmd == kAuto && timerHooks_.toggleAutoStart) timerHooks_.toggleAutoStart();
+        if (cmd == kOpen && timerHooks_.openManager) timerHooks_.openManager(index_);
+    }
+    if (changed) {
+        shownRemain_ = shownUsed_ = -1;
+        Render();
+        TimerChanged(true);
+    }
+    // The menu took the mouse; close the panel if it is no longer over it.
+    SetTimer(hwnd_, kCollapseTimer, 180, nullptr);
+}
+
+LRESULT OverlayWindow::HandleTimer(UINT msg, WPARAM wp, LPARAM lp, bool& handled) {
+    handled = true;
+    switch (msg) {
+        case WM_TIMER:
+            if (wp == kTickTimer) {
+                TimerTick();
+            } else if (wp == kCollapseTimer) {
+                KillTimer(hwnd_, kCollapseTimer);
+                if (pressing_) return 0;
+                POINT pt;
+                RECT wr;
+                GetCursorPos(&pt);
+                GetWindowRect(hwnd_, &wr);
+                if (PtInRect(&wr, pt) || !expanded_) return 0;
+                expanded_ = false;
+                hoverPart_ = 0;
+                Render();
+            }
+            return 0;
+
+        case WM_MOUSEMOVE: {
+            if (!tracking_) {
+                TRACKMOUSEEVENT tme{sizeof tme, TME_LEAVE, hwnd_, 0};
+                tracking_ = TrackMouseEvent(&tme) != FALSE;
+            }
+            KillTimer(hwnd_, kCollapseTimer);
+            bool redraw = false;
+            if (!expanded_) {
+                expanded_ = true;
+                redraw = true;
+            }
+            if (pressing_) {
+                POINT now;
+                GetCursorPos(&now);
+                const int dx = now.x - pressCursor_.x, dy = now.y - pressCursor_.y;
+                if (!layer_.timerLocked && (dragged_ || std::abs(dx) >= 3 || std::abs(dy) >= 3)) {
+                    dragged_ = true;
+                    // Back from the panel's new top-left to the bar's anchored
+                    // offsets, which is what the layer stores.
+                    const double sc = TimerScale();
+                    const SIZE bar = timerface::Size(false, sc);
+                    const int pw = pressRect_.right - pressRect_.left;
+                    const int ph = pressRect_.bottom - pressRect_.top;
+                    int bx = pressRect_.left + dx, by = pressRect_.top + dy;
+                    if (layer_.anchorH == ANCHOR_RIGHT) bx += pw - bar.cx;
+                    if (layer_.anchorV == ANCHOR_BOTTOM) by += ph - bar.cy;
+                    const MonitorInfo& mon = MonitorAt(layer_.monitor);
+                    double ox, oy;
+                    switch (layer_.anchorH) {
+                        case ANCHOR_LEFT:  ox = bx - mon.rect.left; break;
+                        case ANCHOR_RIGHT: ox = mon.rect.right - (bx + bar.cx); break;
+                        default:           ox = bx - (mon.rect.left + (mon.width - bar.cx) / 2); break;
+                    }
+                    switch (layer_.anchorV) {
+                        case ANCHOR_TOP:    oy = by - mon.rect.top; break;
+                        case ANCHOR_BOTTOM: oy = mon.rect.bottom - (by + bar.cy); break;
+                        default:            oy = by - (mon.rect.top + (mon.height - bar.cy) / 2); break;
+                    }
+                    layer_.offsetX = mon.width ? ox * 100.0 / mon.width : 0;
+                    layer_.offsetY = mon.height ? oy * 100.0 / mon.height : 0;
+                    redraw = true;
+                    if (onGeometry_)
+                        onGeometry_(index_, Geometry{layer_.offsetX, layer_.offsetY,
+                                                     layer_.width, layer_.height});
+                }
+            } else {
+                const int part = (int)timerface::HitTest(expanded_, TimerScale(),
+                                                         GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+                if (part != hoverPart_) {
+                    hoverPart_ = part;
+                    redraw = true;
+                }
+            }
+            if (redraw) Render();
+            return 0;
+        }
+
+        case WM_MOUSELEAVE:
+            tracking_ = false;
+            SetTimer(hwnd_, kCollapseTimer, 180, nullptr);
+            return 0;
+
+        case WM_LBUTTONDOWN:
+            pressing_ = true;
+            dragged_ = false;
+            pressPart_ = (int)timerface::HitTest(expanded_, TimerScale(), GET_X_LPARAM(lp),
+                                                 GET_Y_LPARAM(lp));
+            GetCursorPos(&pressCursor_);
+            GetWindowRect(hwnd_, &pressRect_);
+            SetCapture(hwnd_);
+            return 0;
+
+        case WM_LBUTTONUP: {
+            const bool wasDrag = dragged_;
+            const int part = pressPart_;
+            pressing_ = false;
+            dragged_ = false;
+            if (GetCapture() == hwnd_) ReleaseCapture();
+            if (wasDrag)
+                TimerChanged(true);  // keep the new place
+            else if (part == (int)timerface::Part::Dots)
+                TimerMenu();
+            return 0;
+        }
+
+        case WM_CAPTURECHANGED:
+            if (pressing_ && dragged_) TimerChanged(true);
+            pressing_ = false;
+            dragged_ = false;
+            return 0;
+
+        case WM_RBUTTONUP:
+            TimerMenu();
+            return 0;
+
+        case WM_SETCURSOR:
+            SetCursor(LoadCursorW(nullptr, hoverPart_ ? IDC_HAND : IDC_ARROW));
+            return TRUE;
+
+        case WM_NCHITTEST:
+            return HTCLIENT;
+
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+
+        case WM_DPICHANGED:
+            Render();
+            return 0;
+
+        default:
+            break;
+    }
+    handled = false;
+    return 0;
 }

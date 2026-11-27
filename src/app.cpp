@@ -4,22 +4,29 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <thread>
 
 #include "json.h"
 #include "resource.h"
+#include "timer.h"
 #include "updater.h"
 #include "util.h"
 
 namespace {
 
-const wchar_t* kHiddenClass = L"OverlayMgrAppWnd";
-const wchar_t* kMutexName = L"OverlayManager_SingleInstanceMutex";
-const wchar_t* kAppName = L"Overlay Manager";
+const wchar_t* kHiddenClass = L"FloatyAppWnd";
+const wchar_t* kMutexName = L"Floaty_SingleInstanceMutex";
+const wchar_t* kAppName = L"Floaty";
 
 const UINT WM_TRAY = WM_APP + 1;
 const UINT WM_UPDATE_DONE = WM_APP + 2;   // lParam: UpdateResult*, owned by the receiver
-const int kHotkeyId = 1;
+const int kHotkeyId = 1;        // hide / show everything
+const int kCycleHotkeyId = 2;   // show the next layer, hide the others
+
+// Broadcast by Explorer when the taskbar is (re)created, e.g. after Explorer
+// crashed or was restarted: every tray icon has to be added again.
+const UINT WM_TASKBAR_CREATED = RegisterWindowMessageW(L"TaskbarCreated");
 
 // Update checks: shortly after start (not during it, so a slow network never
 // delays the overlays), then every few hours for a machine that stays on.
@@ -27,15 +34,49 @@ const UINT_PTR kUpdateTimer = 1;
 const UINT kFirstCheckMs = 20 * 1000;
 const UINT kCheckEveryMs = 6 * 60 * 60 * 1000;
 
+// Usage statistics: how long each layer has been on screen, counted every few
+// seconds and saved every few minutes (and on every save and on exit).
+const UINT_PTR kUsageTimer = 2;
+const UINT kUsageEveryMs = 15 * 1000;
+const int kUsageSaveEveryTicks = 20;   // 20 × 15 s = 5 minutes
+
+// The settings a first run starts with, and "Reset settings" returns to.
+Settings DefaultSettings() {
+    Settings s;  // the struct's own defaults: no autostart, tray icon on, dark, auto update
+    s.hotkeyMods = MOD_CONTROL | MOD_ALT;
+    s.hotkeyVk = 'H';
+    // N for "next". Ctrl+Alt is AltGr on a Hebrew keyboard, and AltGr+N types
+    // nothing there, so the combination takes no character away from anyone.
+    s.cycleMods = MOD_CONTROL | MOD_ALT;
+    s.cycleVk = 'N';
+    return s;
+}
+
+std::string TodayIso() {
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    char buf[16];
+    snprintf(buf, sizeof buf, "%04d-%02d-%02d", t.wYear, t.wMonth, t.wDay);
+    return buf;
+}
+
 // Tray menu command ids.
 enum {
     CMD_OPEN = 100,
     CMD_TOGGLE_ALL,
     CMD_EXIT,
+    CMD_NEXT_LAYER,
 };
 
 // A colour the ChooseColor dialog remembers between invocations.
 COLORREF g_customColors[16] = {0};
+
+// Hebrew text in a message box needs right-to-left reading order and right
+// alignment, or the punctuation lands on the wrong side and the text hugs the
+// left edge.
+int HebrewMessageBox(HWND owner, const wchar_t* text, UINT flags) {
+    return MessageBoxW(owner, text, kAppName, flags | MB_RTLREADING | MB_RIGHT);
+}
 
 // Serialises one layer for the page. Field names match the model, so the
 // JavaScript reads like the C++.
@@ -62,6 +103,15 @@ js::Value LayerToJson(const Layer& l) {
     o["grayscale"] = l.grayscale;
     o["removeBg"] = l.removeBg;
     o["bgTolerance"] = l.bgTolerance;
+    if (IsTimerImage(l.image)) {
+        js::Object t;
+        t["start"] = l.timerStart;
+        t["remaining"] = l.timerRemaining;
+        t["used"] = l.timerUsed;
+        t["running"] = l.timerRunning;
+        t["locked"] = l.timerLocked;
+        o["timer"] = js::Value(std::move(t));
+    }
 
     // Native pixel size, so the aspect lock in the UI uses the real ratio
     // rather than whatever the box happens to be set to right now.
@@ -107,15 +157,36 @@ void ApplyLayerJson(const js::Value& v, Layer& l) {
     if (v.has("bgTolerance")) l.bgTolerance = std::clamp(v["bgTolerance"].asInt(l.bgTolerance), 1, 100);
 }
 
-std::string HotkeyLabel(const Settings& s) {
+// The key's own name: letters and digits as they are, F-keys numbered, and
+// the rest (arrows, Home, Space...) as the keyboard driver names them. A plain
+// cast of the virtual-key code to a character made F1 read "p".
+std::wstring VkName(unsigned vk) {
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return std::wstring(1, (wchar_t)vk);
+    if (vk >= VK_F1 && vk <= VK_F24) return L"F" + std::to_wstring(vk - VK_F1 + 1);
+    UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    switch (vk) {  // keys on the extended part of the keyboard
+        case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_PRIOR: case VK_NEXT:
+        case VK_HOME: case VK_END: case VK_INSERT: case VK_DELETE: case VK_DIVIDE:
+            scan |= 0x100; break;
+        default: break;
+    }
+    wchar_t buf[64] = {0};
+    if (scan && GetKeyNameTextW((LONG)(scan << 16), buf, 64) > 0) return buf;
+    return L"#" + std::to_wstring(vk);
+}
+
+std::string HotkeyLabel(unsigned mods, unsigned vk) {
+    if (!vk) return {};
     std::wstring out;
-    if (s.hotkeyMods & MOD_CONTROL) out += L"Ctrl+";
-    if (s.hotkeyMods & MOD_ALT) out += L"Alt+";
-    if (s.hotkeyMods & MOD_SHIFT) out += L"Shift+";
-    if (s.hotkeyMods & MOD_WIN) out += L"Win+";
-    out += (wchar_t)s.hotkeyVk;
+    if (mods & MOD_CONTROL) out += L"Ctrl+";
+    if (mods & MOD_ALT) out += L"Alt+";
+    if (mods & MOD_SHIFT) out += L"Shift+";
+    if (mods & MOD_WIN) out += L"Win+";
+    out += VkName(vk);
     return ToUtf8(out);
 }
+
+std::string HotkeyLabel(const Settings& s) { return HotkeyLabel(s.hotkeyMods, s.hotkeyVk); }
 
 }  // namespace
 
@@ -159,26 +230,35 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
         if (HWND existing = FindWindowW(kHiddenClass, nullptr))
             PostMessageW(existing, WM_COMMAND, CMD_OPEN, 0);
         else
-            MessageBoxW(nullptr, L"לא ניתן היה להחליף את המופע הקודם של התוכנה.",
-                        kAppName, MB_ICONWARNING | MB_OK);
+            HebrewMessageBox(nullptr, L"לא ניתן היה להחליף את המופע הקודם של התוכנה.",
+                             MB_ICONWARNING | MB_OK);
         CloseHandle(mutex_);
         mutex_ = nullptr;
         return false;
     }
 
     if (!GdiPlusStart()) {
-        MessageBoxW(nullptr, L"לא ניתן היה לאתחל את GDI+.", kAppName, MB_ICONERROR);
+        HebrewMessageBox(nullptr, L"לא ניתן היה לאתחל את GDI+.", MB_ICONERROR);
         return false;
     }
 
     RefreshMonitors();
-    settings_.hotkeyMods = MOD_CONTROL | MOD_ALT;
-    settings_.hotkeyVk = 'H';
-    LoadConfig(settings_, layers_);
+    settings_ = DefaultSettings();
+    if (!LoadConfig(settings_, layers_) || settings_.statsSince.empty())
+        settings_.statsSince = TodayIso();  // usage is counted from the first run
 
     // The registry is the source of truth for autostart: the user may have
     // removed the entry through Task Manager since the config was written.
     settings_.autoStart = IsAutoStartEnabled();
+    // The entry names a path. If the program has since been moved and that
+    // file is gone, autostart would fail silently at the next logon: point
+    // it here. (A copy elsewhere that still exists is left alone, so running
+    // a second copy once does not take the entry over.)
+    if (settings_.autoStart) {
+        const std::wstring target = AutoStartTarget();
+        if (!target.empty() && GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES)
+            SetAutoStartEnabled(true);
+    }
 
     if (!layers_.empty()) selected_ = 0;
 
@@ -187,21 +267,28 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     wc.hInstance = inst_;
     wc.lpszClassName = kHiddenClass;
     RegisterClassW(&wc);
-    hidden_ = CreateWindowExW(0, kHiddenClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
-                              nullptr, inst_, this);
+    // A top-level window that is never shown, not a message-only one
+    // (HWND_MESSAGE): message-only windows receive no broadcasts, so
+    // WM_DISPLAYCHANGE, WM_ENDSESSION and TaskbarCreated would never arrive.
+    hidden_ = CreateWindowExW(WS_EX_TOOLWINDOW, kHiddenClass, kAppName, WS_POPUP, 0, 0, 0, 0,
+                              nullptr, nullptr, inst_, this);
     if (!hidden_) return false;
     SetWindowLongPtrW(hidden_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    // Run elevated, the app would otherwise never hear Explorer's broadcast.
+    ChangeWindowMessageFilterEx(hidden_, WM_TASKBAR_CREATED, MSGFLT_ALLOW, nullptr);
 
     OverlayWindow::RegisterWindowClass(inst_);
     ManagerWindow::RegisterWindowClass(inst_);
 
-    RegisterHotkey();
     if (settings_.showTrayIcon) CreateTrayIcon();
     RebuildOverlays();
 
     manager_ = std::make_unique<ManagerWindow>(
         inst_, [this](const std::string& json) { OnUiMessage(json); },
         [this] {
+            // Positioning is driven from this window; left on, the layer would
+            // stay a grabbable, click-blocking box with nothing to end it.
+            if (positionIndex_ >= 0) SetPositionMode(positionIndex_, false);
             // Closing the window keeps the overlays running, unless there is no
             // tray icon to get back in through.
             if (settings_.minimizeToTray && settings_.showTrayIcon)
@@ -213,9 +300,26 @@ bool App::Start(bool startMinimized, bool afterUpdate) {
     if (!manager_->Create(settings_.lightTheme)) return false;
     if (!startMinimized) manager_->Show();
 
-    justUpdated_ = afterUpdate;
+    // After the manager exists: a clash with another program's hotkey is
+    // reported to the page, and Send() drops messages while there is no page.
+    RegisterHotkey();
+
+    // An update left a note for this start: either it worked (this is the
+    // version it installed) or it did not take, and either way the page says so.
+    // Only a note about this very file counts: another copy of the program in
+    // another folder shares the settings folder but was not the one replaced.
+    const UpdateRecord record = TakeUpdateRecord();
+    if (record.present && _wcsicmp(ToWide(record.exe).c_str(), ExePath().c_str()) == 0) {
+        if (record.to == AppVersion())
+            updated_ = record;
+        else
+            updateFailedTo_ = record.to;
+    }
+    (void)afterUpdate;
     CleanupAfterUpdate();
     SetTimer(hidden_, kUpdateTimer, kFirstCheckMs, nullptr);
+    lastUsageTick_ = GetTickCount64();
+    SetTimer(hidden_, kUsageTimer, kUsageEveryMs, nullptr);
     return true;
 }
 
@@ -247,11 +351,66 @@ void App::RebuildOverlays() {
                 l.width = g.width;
                 l.height = g.height;
                 SendLayers(selected_);
-            }));
+            },
+            TimerHooks{
+                [this](int index, const Layer& t, bool save) { OnTimerChanged(index, t, save); },
+                [this] { return settings_.autoStart; },
+                [this] {
+                    SetAutoStartEnabled(!settings_.autoStart);
+                    settings_.autoStart = IsAutoStartEnabled();
+                    SaveConfig(settings_, layers_);
+                    SendSettings();
+                },
+                [this](int index) {
+                    if (index >= 0 && index < (int)layers_.size()) {
+                        selected_ = index;
+                        SendLayers(selected_);
+                    }
+                    ShowManager();
+                }}));
         overlays_.back()->SetHiddenByHotkey(allHidden_);
     }
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
         overlays_[positionIndex_]->SetPositionMode(true);
+    RestackOverlays();
+}
+
+void App::RestackOverlays() {
+    // The list order is the paint order: a later layer covers an earlier one.
+    // Raising each window in turn to the top of the topmost band leaves them
+    // stacked exactly that way.
+    const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    for (auto& o : overlays_) SetWindowPos(o->Hwnd(), HWND_TOPMOST, 0, 0, 0, 0, flags);
+    // While a layer is being positioned it has to be grabbable, even where a
+    // later layer would cover it.
+    if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
+        SetWindowPos(overlays_[positionIndex_]->Hwnd(), HWND_TOPMOST, 0, 0, 0, 0, flags);
+}
+
+void App::OnTimerChanged(int index, const Layer& t, bool save) {
+    if (index < 0 || index >= (int)layers_.size()) return;
+    Layer& l = layers_[index];
+    if (!IsTimerImage(l.image)) return;
+    l.timerStart = t.timerStart;
+    l.timerRemaining = t.timerRemaining;
+    l.timerUsed = t.timerUsed;
+    l.timerRunning = t.timerRunning;
+    l.timerLocked = t.timerLocked;
+    l.offsetX = t.offsetX;
+    l.offsetY = t.offsetY;
+    if (save) {
+        SaveConfig(settings_, layers_);
+        SendLayers(selected_);
+    } else if (manager_ && manager_->IsVisible()) {
+        // Once a second, for the clock in the editor.
+        js::Object m;
+        m["t"] = "timer";
+        m["i"] = index;
+        m["remaining"] = l.timerRemaining;
+        m["used"] = l.timerUsed;
+        m["running"] = l.timerRunning;
+        Send(js::Value(std::move(m)).dump());
+    }
 }
 
 void App::SyncOverlay(int index) {
@@ -259,7 +418,20 @@ void App::SyncOverlay(int index) {
     overlays_[index]->Update(layers_[index]);
 }
 
+void App::AccountUsage() {
+    // Time since the last count goes to every layer that was on screen for it.
+    // Called before anything that changes what is shown, so a toggle does not
+    // credit (or lose) up to a tick's worth of the wrong state.
+    const unsigned long long now = GetTickCount64();
+    const double dt = (now - lastUsageTick_) / 1000.0;
+    lastUsageTick_ = now;
+    if (dt <= 0 || allHidden_) return;
+    for (auto& l : layers_)
+        if (l.enabled && !l.image.empty()) l.usageSeconds += dt;
+}
+
 void App::SetAllHidden(bool hidden) {
+    AccountUsage();
     allHidden_ = hidden;
     for (auto& o : overlays_) o->SetHiddenByHotkey(hidden);
     UpdateTrayIcon();
@@ -273,11 +445,18 @@ void App::SetAllHidden(bool hidden) {
 void App::SetPositionMode(int index, bool on) {
     // Only one layer at a time is draggable, otherwise the scrims stack up and
     // the wrong one takes the click.
+    const int previous = positionIndex_;
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size())
         overlays_[positionIndex_]->SetPositionMode(false);
 
     positionIndex_ = on ? index : -1;
     if (positionIndex_ >= 0 && positionIndex_ < (int)overlays_.size()) {
+        // What "Cancel" goes back to: the layer as it was, and whether
+        // everything was hidden, before positioning switched those on.
+        if (positionIndex_ != previous) {
+            positionBackup_ = layers_[positionIndex_];
+            positionWasHidden_ = allHidden_;
+        }
         overlays_[positionIndex_]->SetPositionMode(true);
         // A hidden or disabled layer cannot be dragged, so make it visible for
         // the duration instead of leaving the user clicking at nothing.
@@ -288,10 +467,41 @@ void App::SetPositionMode(int index, bool on) {
             SendLayers(selected_);
         }
     }
+    RestackOverlays();
 
     js::Object m;
     m["t"] = "positionMode";
     m["on"] = on;
+    m["i"] = index;
+    Send(js::Value(std::move(m)).dump());
+}
+
+void App::CancelPositionMode() {
+    const int i = positionIndex_;
+    if (i < 0 || i >= (int)layers_.size()) return;
+    // Put back where, how big and whether it was shown; any other edit made
+    // meanwhile (opacity, tint...) came from the editor and stays.
+    Layer& l = layers_[i];
+    l.offsetX = positionBackup_.offsetX;
+    l.offsetY = positionBackup_.offsetY;
+    l.width = positionBackup_.width;
+    l.height = positionBackup_.height;
+    l.enabled = positionBackup_.enabled;
+    SetPositionMode(i, false);
+    SyncOverlay(i);
+    if (positionWasHidden_) SetAllHidden(true);
+    SendLayers(selected_);
+}
+
+void App::RemapPositionIndex(int index) {
+    // Rows above the positioned layer came or went: follow the same layer to
+    // its new index, or leave position mode if it was the one removed. The
+    // page is told, since it marks the layer by index.
+    if (index == positionIndex_) return;
+    positionIndex_ = index;
+    js::Object m;
+    m["t"] = "positionMode";
+    m["on"] = index >= 0;
     m["i"] = index;
     Send(js::Value(std::move(m)).dump());
 }
@@ -302,10 +512,7 @@ void App::Send(const std::string& json) {
     if (manager_) manager_->Post(json);
 }
 
-void App::SendInit() {
-    js::Object m;
-    m["t"] = "init";
-
+js::Value App::SettingsJson() const {
     js::Object s;
     s["autoStart"] = settings_.autoStart;
     s["minimizeToTray"] = settings_.minimizeToTray;
@@ -313,7 +520,31 @@ void App::SendInit() {
     s["lightTheme"] = settings_.lightTheme;
     s["autoUpdate"] = settings_.autoUpdate;
     s["hotkey"] = HotkeyLabel(settings_);
-    m["settings"] = js::Value(std::move(s));
+    s["cycleHotkey"] = HotkeyLabel(settings_.cycleMods, settings_.cycleVk);
+    // Shown in the status bar for as long as it is true, not only as a toast
+    // that a window opened later never sees.
+    s["hotkeyBusy"] = !hotkeyOk_;
+    s["cycleBusy"] = settings_.cycleVk != 0 && !cycleOk_;
+    return js::Value(std::move(s));
+}
+
+void App::SendSettings() {
+    js::Object m;
+    m["t"] = "settings";
+    m["settings"] = SettingsJson();
+    Send(js::Value(std::move(m)).dump());
+}
+
+void App::SendInit() {
+    js::Object m;
+    m["t"] = "init";
+    m["settings"] = SettingsJson();
+
+    js::Array stickers, more;
+    for (const auto& name : StickerNames(StickerGroup::Main)) stickers.push_back(js::Value(ToUtf8(name)));
+    for (const auto& name : StickerNames(StickerGroup::More)) more.push_back(js::Value(ToUtf8(name)));
+    m["stickers"] = js::Value(std::move(stickers));
+    m["moreStickers"] = js::Value(std::move(more));
 
     js::Array mons;
     for (const auto& mon : Monitors()) {
@@ -333,20 +564,29 @@ void App::SendInit() {
 
     Send(js::Value(std::move(m)).dump());
     SendUpdateState();
-    if (justUpdated_) {
-        justUpdated_ = false;
-        js::Object t;
-        t["t"] = "toast";
-        t["text"] = std::string("התוכנה עודכנה לגרסה ") + AppVersion();
-        Send(js::Value(std::move(t)).dump());
-    }
 }
 
 void App::SendUpdateState() {
+    // Everything the page needs to say about updates, as state rather than
+    // toasts: a window opened hours after the event still shows it.
     js::Object m;
     m["t"] = "update";
     m["busy"] = updateBusy_;
-    m["ready"] = updateReady_;
+    m["ready"] = updateReady_;          // installed, waiting for a restart
+    m["available"] = updateAvailable_;  // found, automatic install is off
+    m["notes"] = updateNotes_;          // what the ready/available release says
+    m["error"] = updateError_;          // the last install attempt failed
+    m["updatedTo"] = updated_.to;       // this start is the result of an update
+    m["updatedNotes"] = updated_.notes;
+    m["failedTo"] = updateFailedTo_;    // an update was installed but did not take
+    // The last check, for the details line in the settings: when, what the
+    // newest release is and when it came out, or why the check failed.
+    m["current"] = AppVersion();
+    m["checkedAt"] = (double)lastCheck_.atMs;  // 0 = not checked since start
+    m["checkOk"] = lastCheck_.ok;
+    m["latest"] = lastCheck_.latest;
+    m["published"] = lastCheck_.published;
+    m["checkError"] = lastCheck_.error;
     Send(js::Value(std::move(m)).dump());
 }
 
@@ -392,6 +632,7 @@ void App::OnUiMessage(const std::string& json) {
 
     if (cmd == "patch") {
         if (!valid) return;
+        AccountUsage();  // before a change that may hide or show the layer
         ApplyLayerJson(msg["layer"], layers_[i]);
         SyncOverlay(i);
         return;
@@ -417,6 +658,7 @@ void App::OnUiMessage(const std::string& json) {
         copy.offsetY += 2.0;
         layers_.insert(layers_.begin() + i + 1, copy);
         selected_ = i + 1;
+        if (positionIndex_ > i) RemapPositionIndex(positionIndex_ + 1);
         RebuildOverlays();
         SendLayers(selected_);
         return;
@@ -424,13 +666,20 @@ void App::OnUiMessage(const std::string& json) {
 
     if (cmd == "delete") {
         if (!valid) return;
-        const std::wstring prompt =
-            L"למחוק את השכבה \"" + layers_[i].name + L"\"?\n\nאי אפשר לבטל את הפעולה.";
-        if (MessageBoxW(manager_ ? manager_->Hwnd() : nullptr, prompt.c_str(),
-                        kAppName, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
-            return;
+        // The page asks in its own dialog and says so; anything else still
+        // gets a native confirmation.
+        if (!msg["confirmed"].asBool(false)) {
+            const std::wstring prompt =
+                L"למחוק את השכבה \"" + layers_[i].name + L"\"?\n\nאי אפשר לבטל את הפעולה.";
+            if (HebrewMessageBox(manager_ ? manager_->Hwnd() : nullptr, prompt.c_str(),
+                                 MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+                return;
+        }
         layers_.erase(layers_.begin() + i);
-        if (positionIndex_ == i) positionIndex_ = -1;
+        if (positionIndex_ == i)
+            RemapPositionIndex(-1);
+        else if (positionIndex_ > i)
+            RemapPositionIndex(positionIndex_ - 1);
         selected_ = layers_.empty() ? -1 : std::min(i, (int)layers_.size() - 1);
         RebuildOverlays();
         SendLayers(selected_);
@@ -447,6 +696,13 @@ void App::OnUiMessage(const std::string& json) {
         layers_.erase(layers_.begin() + from);
         layers_.insert(layers_.begin() + to, l);
         selected_ = to;
+        const int pos = positionIndex_;
+        if (pos == from)
+            RemapPositionIndex(to);
+        else if (from < pos && pos <= to)
+            RemapPositionIndex(pos - 1);
+        else if (to <= pos && pos < from)
+            RemapPositionIndex(pos + 1);
         RebuildOverlays();
         SendLayers(selected_);
         return;
@@ -454,6 +710,116 @@ void App::OnUiMessage(const std::string& json) {
 
     if (cmd == "needPreview") {
         SendPreview(ToWide(msg["path"].asString()), std::clamp(msg["bg"].asInt(0), 0, 100));
+        return;
+    }
+
+    if (cmd == "sticker") {
+        // Only a name from the built-in list; never a path from the page.
+        const std::wstring name = ToWide(msg["name"].asString());
+        const auto names = StickerNames();
+        if (valid && std::find(names.begin(), names.end(), name) != names.end())
+            SetLayerImage(i, StickerPath(name));
+        return;
+    }
+
+    if (cmd == "widget") {
+        // The kiosk timer, the one built-in layer that is drawn, not a picture.
+        if (!valid || msg["name"].asString() != "timer") return;
+        Layer& l = layers_[i];
+        if (!IsTimerImage(l.image)) {
+            const bool hadPicture = !l.image.empty();
+            l.image = kTimerImage;
+            l.timerStart = kTimerDefaultStart;
+            l.timerRemaining = kTimerDefaultStart;
+            l.timerUsed = 0;
+            l.timerRunning = true;
+            l.timerLocked = false;
+            const SIZE bar = timerface::Size(false, 1.0);  // for the previews
+            l.width = bar.cx;
+            l.height = bar.cy;
+            l.rotation = 0;
+            // Always its usual place, close to the top-left corner: where the
+            // layer's picture or sticker sat says nothing about the timer.
+            l.anchorH = ANCHOR_LEFT;
+            l.anchorV = ANCHOR_TOP;
+            l.offsetX = kTimerDefaultOffset;
+            l.offsetY = kTimerDefaultOffset;
+            if (!hadPicture && l.name.rfind(L"שכבה", 0) == 0) l.name = L"טיימר עמדה";
+        }
+        SyncOverlay(i);
+        SaveConfig(settings_, layers_);
+        SendPreview(l.image, 0);
+        SendLayers(selected_);
+        return;
+    }
+
+    if (cmd == "timer") {
+        if (!valid || !IsTimerImage(layers_[i].image)) return;
+        Layer& l = layers_[i];
+        const std::string op = msg["op"].asString();
+        const int v = std::max(0, msg["value"].asInt(0));
+        if (op == "set") {
+            l.timerRemaining = v;
+        } else if (op == "start") {
+            l.timerStart = v;
+            l.timerRemaining = v;
+            l.timerUsed = 0;
+        } else if (op == "reset") {
+            l.timerRemaining = l.timerStart;
+            l.timerUsed = 0;
+        } else if (op == "add") {
+            l.timerRemaining = std::max(0.0, l.timerRemaining + msg["value"].asInt(0) * 60.0);
+        } else if (op == "running") {
+            l.timerRunning = msg["value"].asBool(l.timerRunning);
+        } else if (op == "locked") {
+            l.timerLocked = msg["value"].asBool(l.timerLocked);
+        } else {
+            return;
+        }
+        SyncOverlay(i);
+        SaveConfig(settings_, layers_);
+        SendLayers(selected_);
+        return;
+    }
+
+    if (cmd == "setHotkey") {
+        SetHotkey(msg["which"].asString() == "cycle", (unsigned)msg["mods"].asInt(0),
+                  (unsigned)msg["vk"].asInt(0));
+        return;
+    }
+
+    if (cmd == "stats") {
+        SendStats();
+        return;
+    }
+
+    if (cmd == "resetStats") {
+        AccountUsage();
+        for (auto& l : layers_) l.usageSeconds = 0;
+        settings_.statsSince = TodayIso();
+        SaveConfig(settings_, layers_);
+        SendStats();
+        return;
+    }
+
+    if (cmd == "resetSettings") {
+        ResetSettings();
+        Toast("ההגדרות חזרו לברירת המחדל. השכבות לא השתנו", false);
+        return;
+    }
+
+    if (cmd == "resetAll") {
+        ResetAll();
+        return;
+    }
+
+    if (cmd == "undoReset") {
+        UndoReset();
+        return;
+    }
+
+    if (cmd == "nextLayer") {
+        ShowNextLayer();
         return;
     }
 
@@ -468,7 +834,11 @@ void App::OnUiMessage(const std::string& json) {
     }
 
     if (cmd == "position") {
-        if (valid) SetPositionMode(i, msg["on"].asBool(true));
+        if (!valid) return;
+        if (msg["cancel"].asBool(false))
+            CancelPositionMode();
+        else
+            SetPositionMode(i, msg["on"].asBool(true));
         return;
     }
 
@@ -495,6 +865,8 @@ void App::OnUiMessage(const std::string& json) {
         }
         settings_.minimizeToTray = s["minimizeToTray"].asBool(settings_.minimizeToTray);
         settings_.lightTheme = s["lightTheme"].asBool(settings_.lightTheme);
+        // The frame (title bar, the fill behind the page) follows the page's theme.
+        if (manager_) manager_->SetTheme(settings_.lightTheme);
         settings_.autoUpdate = s["autoUpdate"].asBool(settings_.autoUpdate);
 
         const bool wantTray = s["showTrayIcon"].asBool(settings_.showTrayIcon);
@@ -509,22 +881,48 @@ void App::OnUiMessage(const std::string& json) {
     }
 
     if (cmd == "save") {
-        if (SaveConfig(settings_, layers_)) {
-            js::Object m;
-            m["t"] = "saved";
-            Send(js::Value(std::move(m)).dump());
-        } else {
-            js::Object m;
-            m["t"] = "toast";
-            m["text"] = "השמירה נכשלה — אין הרשאת כתיבה לתיקיית ההגדרות";
-            m["warn"] = true;
-            Send(js::Value(std::move(m)).dump());
-        }
+        // The page saves by itself after every edit and keeps the outcome in
+        // its status bar, so a failure is a state there rather than a toast
+        // repeated on every keystroke.
+        js::Object m;
+        m["t"] = "saved";
+        m["ok"] = SaveConfig(settings_, layers_);
+        Send(js::Value(std::move(m)).dump());
         return;
     }
 
     if (cmd == "checkUpdate") {
-        StartUpdateCheck(true);
+        StartUpdateCheck(true, settings_.autoUpdate);
+        return;
+    }
+
+    if (cmd == "installUpdate") {
+        updateError_.clear();
+        StartUpdateCheck(true, true);
+        return;
+    }
+
+    if (cmd == "openReleases") {
+        ShellExecuteW(nullptr, L"open", ToWide(ReleasesPageUrl()).c_str(), nullptr, nullptr,
+                      SW_SHOWNORMAL);
+        return;
+    }
+
+    if (cmd == "openLink") {
+        // A fixed list, not a URL from the page: the page can only name one.
+        const std::string which = msg["which"].asString();
+        const wchar_t* url = which == "home"     ? L"https://github.com/tsoolgee/overlay-manager-win"
+                           : which == "original" ? L"https://github.com/tsoolgee/overlay-manager-win"
+                           : which == "tsoolgee" ? L"https://github.com/tsoolgee"
+                           : nullptr;
+        if (url) ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+
+    if (cmd == "dismissUpdated") {
+        updated_ = UpdateRecord{};
+        updateFailedTo_.clear();
+        SendUpdateState();
         return;
     }
 
@@ -543,7 +941,9 @@ void App::OnUiMessage(const std::string& json) {
 
 void App::BrowseImage(int index) {
     wchar_t file[MAX_PATH * 4] = {0};
-    wcsncpy_s(file, layers_[index].image.c_str(), _TRUNCATE);
+    // A built-in sticker is not a path the file dialog could start from.
+    if (!IsStickerPath(layers_[index].image))
+        wcsncpy_s(file, layers_[index].image.c_str(), _TRUNCATE);
 
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -557,18 +957,49 @@ void App::BrowseImage(int index) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
 
     if (!GetOpenFileNameW(&ofn)) return;
+    SetLayerImage(index, file);
+}
 
+void App::SetLayerImage(int index, const std::wstring& image) {
     Layer& l = layers_[index];
-    l.image = file;
+    const bool hadPicture = !l.image.empty();
+    // Still where the previous sticker goes by default (not moved since)?
+    // Then the new one may take its own usual place too.
+    // (A timer still at its own usual place counts the same way.)
+    double prevX = 0, prevY = 0;
+    const bool atStickerPlace =
+        (StickerDefaultPlace(l.image, prevX, prevY) &&
+         l.anchorH == ANCHOR_LEFT && l.anchorV == ANCHOR_BOTTOM &&
+         std::fabs(l.offsetX - prevX) < 0.05 && std::fabs(l.offsetY - prevY) < 0.05) ||
+        (IsTimerImage(l.image) && l.anchorH == ANCHOR_LEFT && l.anchorV == ANCHOR_TOP &&
+         std::fabs(l.offsetX - kTimerDefaultOffset) < 0.05 &&
+         std::fabs(l.offsetY - kTimerDefaultOffset) < 0.05);
+    l.image = image;
 
     // Fit the box to the new image's aspect ratio, keeping the current width.
     int iw = 0, ih = 0;
-    if (ImagePixelSize(l.image, iw, ih) && iw > 0) {
+    const int stickerWidth = StickerDefaultWidth(image);
+    if (stickerWidth && ImagePixelSize(l.image, iw, ih) && iw > 0) {
+        // A built-in sticker comes at its own size, in proportion; on a layer
+        // that had no picture yet it also takes its usual place, the
+        // bottom-left corner just above the taskbar.
+        l.width = stickerWidth;
+        l.height = std::max(16, (int)std::lround((double)stickerWidth * ih / iw));
+        double offX = 0, offY = 0;
+        if ((!hadPicture || atStickerPlace) && StickerDefaultPlace(image, offX, offY)) {
+            l.anchorH = ANCHOR_LEFT;
+            l.anchorV = ANCHOR_BOTTOM;
+            l.offsetX = offX;
+            l.offsetY = offY;
+        }
+    } else if (ImagePixelSize(l.image, iw, ih) && iw > 0) {
         if (l.lockAspect)
             l.height = std::max(16, (int)std::lround((double)l.width * ih / iw));
         // A layer that never had a picture starts life at the image's own size,
-        // clamped so a huge photo does not cover the whole screen.
-        if (l.name == L"שכבה חדשה" || (l.width == 200 && l.height == 200)) {
+        // clamped so a huge photo does not cover the whole screen. (This used
+        // to test for the name "שכבה חדשה", which new layers no longer get:
+        // "Add" names them "שכבה 1", "שכבה 2"...)
+        if (!hadPicture) {
             const int cap = 480;
             const double scale = std::min(1.0, (double)cap / std::max(iw, ih));
             l.width = std::max(16, (int)std::lround(iw * scale));
@@ -650,6 +1081,7 @@ void App::ShowTrayMenu() {
     AppendMenuW(menu, MF_STRING, CMD_OPEN, L"פתח חלון ניהול");
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_ALL,
                 allHidden_ ? L"הצג הכל" : L"הסתר הכל");
+    if (layers_.size() > 1) AppendMenuW(menu, MF_STRING, CMD_NEXT_LAYER, L"השכבה הבאה");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_EXIT, L"יציאה");
 
@@ -657,28 +1089,201 @@ void App::ShowTrayMenu() {
     GetCursorPos(&pt);
     // Required so the menu dismisses when the user clicks elsewhere.
     SetForegroundWindow(hidden_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RIGHTALIGN, pt.x, pt.y, 0, hidden_,
+    // TPM_LAYOUTRTL: a Hebrew menu, aligned and ordered right to left.
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_LAYOUTRTL, pt.x, pt.y, 0, hidden_,
                    nullptr);
     PostMessageW(hidden_, WM_NULL, 0, 0);
     DestroyMenu(menu);
 }
 
 void App::RegisterHotkey() {
+    // MOD_NOREPEAT: holding the keys down toggles once, not on every repeat.
     UnregisterHotKey(hidden_, kHotkeyId);
-    if (!RegisterHotKey(hidden_, kHotkeyId, settings_.hotkeyMods, settings_.hotkeyVk)) {
-        // Another program already owns the combination. Not fatal: everything
-        // else still works, so say so once instead of refusing to start.
+    hotkeyOk_ = RegisterHotKey(hidden_, kHotkeyId, settings_.hotkeyMods | MOD_NOREPEAT,
+                               settings_.hotkeyVk) != FALSE;
+    UnregisterHotKey(hidden_, kCycleHotkeyId);
+    cycleOk_ = settings_.cycleVk == 0 ||
+               RegisterHotKey(hidden_, kCycleHotkeyId, settings_.cycleMods | MOD_NOREPEAT,
+                              settings_.cycleVk) != FALSE;
+    // Another program already owns a combination. Not fatal: everything else
+    // still works, so say so once instead of refusing to start.
+    for (const auto& [ok, label] : {std::pair{hotkeyOk_, HotkeyLabel(settings_)},
+                                    std::pair{cycleOk_, HotkeyLabel(settings_.cycleMods, settings_.cycleVk)}}) {
+        if (ok) continue;
         js::Object m;
         m["t"] = "toast";
-        m["text"] = "צירוף המקשים " + HotkeyLabel(settings_) + " תפוס על ידי תוכנה אחרת";
+        m["text"] = "צירוף המקשים " + label + " תפוס על ידי תוכנה אחרת";
         m["warn"] = true;
         Send(js::Value(std::move(m)).dump());
     }
 }
 
+void App::SetHotkey(bool cycle, unsigned mods, unsigned vk) {
+    mods &= MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
+    if (vk > 0xFE) return;
+    const int id = cycle ? kCycleHotkeyId : kHotkeyId;
+    unsigned& curMods = cycle ? settings_.cycleMods : settings_.hotkeyMods;
+    unsigned& curVk = cycle ? settings_.cycleVk : settings_.hotkeyVk;
+    bool& ok = cycle ? cycleOk_ : hotkeyOk_;
+    auto toast = [this](const std::string& text, bool warn) {
+        js::Object t;
+        t["t"] = "toast";
+        t["text"] = text;
+        t["warn"] = warn;
+        Send(js::Value(std::move(t)).dump());
+    };
+
+    // Hiding everything has no "off": without it there is no way to get the
+    // layers out of a screenshot. Only the next-layer key can be turned off.
+    if (vk == 0 && !cycle) return;
+    const unsigned otherMods = cycle ? settings_.hotkeyMods : settings_.cycleMods;
+    const unsigned otherVk = cycle ? settings_.hotkeyVk : settings_.cycleVk;
+    if (vk && vk == otherVk && mods == otherMods) {
+        toast("הצירוף " + HotkeyLabel(mods, vk) + " כבר משמש לקיצור השני", true);
+        SendSettings();
+        return;
+    }
+
+    UnregisterHotKey(hidden_, id);
+    if (vk && !RegisterHotKey(hidden_, id, mods | MOD_NOREPEAT, vk)) {
+        // Taken by another program: keep the one that worked.
+        if (curVk) ok = RegisterHotKey(hidden_, id, curMods | MOD_NOREPEAT, curVk) != FALSE;
+        toast("הצירוף " + HotkeyLabel(mods, vk) + " תפוס על ידי תוכנה אחרת. הקיצור לא השתנה", true);
+        SendSettings();
+        return;
+    }
+    curMods = mods;
+    curVk = vk;
+    ok = true;
+    SaveConfig(settings_, layers_);
+    SendSettings();
+    toast(vk ? "הקיצור עודכן ל-" + HotkeyLabel(mods, vk) : std::string("הקיצור לשכבה הבאה כובה"), false);
+}
+
+void App::Toast(const std::string& text, bool warn, const char* action, const char* actionLabel) {
+    js::Object t;
+    t["t"] = "toast";
+    t["text"] = text;
+    t["warn"] = warn;
+    if (action) {
+        // A button in the toast that sends this command back (e.g. undo).
+        t["action"] = action;
+        t["actionLabel"] = actionLabel ? actionLabel : "";
+    }
+    Send(js::Value(std::move(t)).dump());
+}
+
+void App::SendStats() {
+    AccountUsage();
+    js::Object m;
+    m["t"] = "stats";
+    m["since"] = settings_.statsSince;
+    js::Array items;
+    for (const auto& l : layers_) {
+        js::Object o;
+        o["name"] = ToUtf8(l.name);
+        o["image"] = ToUtf8(l.image);
+        o["seconds"] = (double)(long long)l.usageSeconds;
+        items.push_back(js::Value(std::move(o)));
+    }
+    m["items"] = js::Value(std::move(items));
+    Send(js::Value(std::move(m)).dump());
+}
+
+void App::ResetSettings() {
+    // Back to what a first run starts with. The layers are left as they are;
+    // autostart is a registry entry, so it is removed there too.
+    if (IsAutoStartEnabled()) SetAutoStartEnabled(false);
+    const std::string since = settings_.statsSince;
+    settings_ = DefaultSettings();
+    settings_.statsSince = since;
+    RegisterHotkey();
+    if (!trayAdded_) CreateTrayIcon();
+    if (manager_) manager_->SetTheme(settings_.lightTheme);
+    SaveConfig(settings_, layers_);
+    SendSettings();
+}
+
+void App::ResetAll() {
+    // Everything goes, as on a fresh install - but a copy of the configuration
+    // is kept first, and the toast offers to bring it back.
+    const std::wstring backup = ConfigDir() + L"\\config-before-reset.ini";
+    AccountUsage();
+    SaveConfig(settings_, layers_);
+    CopyFileW(ConfigPath().c_str(), backup.c_str(), FALSE);
+
+    if (positionIndex_ >= 0) SetPositionMode(positionIndex_, false);
+    layers_.clear();
+    selected_ = -1;
+    allHidden_ = false;
+    ResetSettings();
+    settings_.statsSince = TodayIso();
+    SaveConfig(settings_, layers_);
+    RebuildOverlays();
+    UpdateTrayIcon();
+    SendInit();
+    Toast("התוכנה אופסה: כל השכבות וההגדרות נמחקו", true, "undoReset", "להחזיר את מה שהיה");
+}
+
+void App::UndoReset() {
+    const std::wstring backup = ConfigDir() + L"\\config-before-reset.ini";
+    if (GetFileAttributesW(backup.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    if (!CopyFileW(backup.c_str(), ConfigPath().c_str(), FALSE)) {
+        Toast("לא ניתן היה לשחזר את ההגדרות הקודמות", true);
+        return;
+    }
+    DeleteFileW(backup.c_str());
+    settings_ = DefaultSettings();
+    layers_.clear();
+    LoadConfig(settings_, layers_);
+    if (settings_.statsSince.empty()) settings_.statsSince = TodayIso();
+    // The saved file remembers whether autostart was on; the registry entry
+    // itself was removed by the reset, so put it back to match.
+    if (settings_.autoStart) SetAutoStartEnabled(true);
+    settings_.autoStart = IsAutoStartEnabled();
+    RegisterHotkey();
+    if (settings_.showTrayIcon) CreateTrayIcon(); else RemoveTrayIcon();
+    if (manager_) manager_->SetTheme(settings_.lightTheme);
+    selected_ = layers_.empty() ? -1 : 0;
+    RebuildOverlays();
+    SendInit();
+    Toast("השכבות וההגדרות חזרו", false);
+}
+
+void App::ShowNextLayer() {
+    AccountUsage();
+    // Only layers with a picture take part; a layer without one would show
+    // nothing, which looks like the key did not work.
+    std::vector<int> pics;
+    for (int i = 0; i < (int)layers_.size(); ++i)
+        if (!layers_[i].image.empty()) pics.push_back(i);
+    if (pics.empty()) return;
+
+    // From exactly one shown layer, move to the next; from any other state
+    // (none shown, several shown), start at the first.
+    int shown = -1, count = 0;
+    for (int i : pics)
+        if (layers_[i].enabled) { shown = i; ++count; }
+    int next = pics.front();
+    if (count == 1) {
+        const auto it = std::find(pics.begin(), pics.end(), shown);
+        next = (it + 1 == pics.end()) ? pics.front() : *(it + 1);
+    }
+
+    for (int i = 0; i < (int)layers_.size(); ++i) {
+        const bool want = i == next;
+        if (layers_[i].enabled == want) continue;
+        layers_[i].enabled = want;
+        SyncOverlay(i);
+    }
+    if (allHidden_) SetAllHidden(false);
+    SendLayers(selected_);
+    SaveConfig(settings_, layers_);
+}
+
 // --- updates ---------------------------------------------------------------
 
-void App::StartUpdateCheck(bool manual) {
+void App::StartUpdateCheck(bool manual, bool install) {
     if (updateBusy_) return;
     if (!updateReady_.empty()) {
         // Already downloaded; checking again would only fetch the same file.
@@ -689,11 +1294,13 @@ void App::StartUpdateCheck(bool manual) {
     if (manual) SendUpdateState();
 
     const HWND target = hidden_;
-    std::thread([target, manual] {
+    std::thread([target, manual, install] {
         auto* r = new UpdateResult;
         r->manual = manual;
         r->info = CheckForUpdate();
-        if (r->info.ok && r->info.newer) {
+        // With automatic install off, a newer release is only announced; it is
+        // installed when the user presses "Update now".
+        if (r->info.ok && r->info.newer && install) {
             r->installError = DownloadAndInstall(r->info);
             r->installed = r->installError.empty();
         }
@@ -705,10 +1312,31 @@ void App::OnUpdateFinished(UpdateResult* result) {
     std::unique_ptr<UpdateResult> r(result);
     updateBusy_ = false;
 
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    const unsigned long long ticks = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    lastCheck_.atMs = (long long)(ticks / 10000ULL - 11644473600000ULL);  // Unix milliseconds
+    lastCheck_.ok = r->info.ok;
+    lastCheck_.latest = r->info.version;
+    lastCheck_.published = r->info.publishedAt;
+    lastCheck_.error = r->info.error;
+
+    // "26.11.2026" from "2026-11-26", for the messages below.
+    std::string published;
+    if (r->info.publishedAt.size() == 10)
+        published = r->info.publishedAt.substr(8, 2) + "." + r->info.publishedAt.substr(5, 2) + "." +
+                    r->info.publishedAt.substr(0, 4);
+
     std::string text;
     bool warn = false;
     if (r->installed) {
         updateReady_ = r->info.version;
+        updateNotes_ = r->info.notes;
+        updateAvailable_.clear();
+        updateError_.clear();
+        // The next start reads this to say "updated to X" with the notes, or
+        // that the swap did not take.
+        WriteUpdateRecord(r->info);
         // Nobody is looking at the window: restart straight away, the overlays
         // come back within a second. Otherwise leave the choice to the user.
         if (!manager_ || !manager_->IsVisible()) {
@@ -719,19 +1347,28 @@ void App::OnUpdateFinished(UpdateResult* result) {
         text = r->info.error;
         warn = true;
     } else if (!r->installError.empty()) {
-        text = "העדכון לגרסה " + r->info.version + " נכשל: " + r->installError;
-        warn = true;
+        // Kept as state: the page shows it with a manual-download button until
+        // an install succeeds, since a toast is gone before anyone reads it.
+        updateError_ = "העדכון לגרסה " + r->info.version + " לא הותקן: " + r->installError;
+        updateAvailable_ = r->info.version;
+        updateNotes_ = r->info.notes;
     } else if (!r->info.error.empty()) {
         text = r->info.error;
         warn = true;
+    } else if (r->info.newer) {
+        updateAvailable_ = r->info.version;
+        updateNotes_ = r->info.notes;
+        text = "נמצאה גרסה " + r->info.version + (published.empty() ? "" : ", שפורסמה ב-" + published) +
+               ". הגרסה שלך: " + AppVersion();
     } else {
-        text = std::string("זו הגרסה העדכנית ביותר (") + AppVersion() + ")";
+        updateAvailable_.clear();
+        text = std::string("יש לך את הגרסה העדכנית ביותר, ") + AppVersion() +
+               (published.empty() ? "" : " (פורסמה ב-" + published + ")");
     }
 
     SendUpdateState();
-    // A background check stays quiet unless it has something to show; a
-    // failed install is worth knowing about either way.
-    if (!text.empty() && (r->manual || !r->installError.empty())) {
+    // A background check stays quiet; what it found is in the update state.
+    if (!text.empty() && r->manual) {
         js::Object t;
         t["t"] = "toast";
         t["text"] = text;
@@ -761,6 +1398,7 @@ void App::ShowManager() {
 void App::RequestQuit() {
     quitting_ = true;
     // Persist before leaving, so a session's tweaks are not silently lost.
+    AccountUsage();
     SaveConfig(settings_, layers_);
     RemoveTrayIcon();
     overlays_.clear();
@@ -789,6 +1427,7 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 case CMD_OPEN: ShowManager(); return 0;
                 case CMD_TOGGLE_ALL: SetAllHidden(!allHidden_); return 0;
                 case CMD_EXIT: RequestQuit(); return 0;
+                case CMD_NEXT_LAYER: ShowNextLayer(); return 0;
                 default: break;
             }
             break;
@@ -800,28 +1439,45 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             if (wp == kUpdateTimer) {
                 SetTimer(hidden_, kUpdateTimer, kCheckEveryMs, nullptr);
-                if (settings_.autoUpdate) StartUpdateCheck(false);
+                // Always look; install only when automatic updates are on.
+                StartUpdateCheck(false, settings_.autoUpdate);
+                return 0;
+            }
+            if (wp == kUsageTimer) {
+                AccountUsage();
+                // A running kiosk timer is saved every tick (15 s), as the
+                // original did, so a power cut costs it seconds, not minutes.
+                const bool timerRunning = std::any_of(layers_.begin(), layers_.end(), [](const Layer& l) {
+                    return IsTimerImage(l.image) && l.timerRunning && l.timerRemaining > 0;
+                });
+                if (++usageTicks_ >= kUsageSaveEveryTicks || timerRunning) {
+                    usageTicks_ = 0;
+                    SaveConfig(settings_, layers_);
+                }
                 return 0;
             }
             break;
 
         case WM_HOTKEY:
             if (wp == kHotkeyId) SetAllHidden(!allHidden_);
+            else if (wp == kCycleHotkeyId) ShowNextLayer();
             return 0;
 
-        case WM_DISPLAYCHANGE:
-        case WM_SETTINGCHANGE: {
+        case WM_DISPLAYCHANGE: {
             // A monitor was added, removed or rearranged. Re-read the layout and
             // move every overlay onto its target screen's new rectangle.
+            // A layer whose monitor is gone keeps its index: MonitorAt() shows
+            // it on the primary screen meanwhile, and it returns to its own
+            // screen when that is plugged back in, instead of the layout being
+            // rewritten (and saved) the moment a laptop leaves its dock.
             RefreshMonitors();
-            const int count = (int)Monitors().size();
-            for (auto& l : layers_)
-                if (l.monitor >= count) l.monitor = 0;
             for (auto& o : overlays_) o->Reposition();
-            for (size_t i = 0; i < overlays_.size(); ++i) SyncOverlay((int)i);
             SendInit();
             return 0;
         }
+
+        case WM_QUERYENDSESSION:
+            return TRUE;
 
         case WM_ENDSESSION:
             // Windows is shutting down; there is no second chance to write.
@@ -833,6 +1489,14 @@ LRESULT App::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         default:
+            if (msg == WM_TASKBAR_CREATED && msg != 0) {
+                // Explorer restarted and forgot our icon; put it back. Remove
+                // first, so a broadcast that arrives while the icon is still
+                // there does not fail the add and leave it orphaned.
+                if (trayAdded_) RemoveTrayIcon();
+                if (settings_.showTrayIcon && CreateTrayIcon()) UpdateTrayIcon();
+                return 0;
+            }
             break;
     }
     return DefWindowProcW(hidden_, msg, wp, lp);

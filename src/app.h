@@ -7,9 +7,11 @@
 #include <string>
 #include <vector>
 
+#include "json.h"
 #include "manager.h"
 #include "model.h"
 #include "overlay.h"
+#include "updater.h"
 
 class App {
 public:
@@ -22,6 +24,8 @@ public:
 private:
     // --- messages from the page ---
     void OnUiMessage(const std::string& json);
+    js::Value SettingsJson() const;
+    void SendSettings();
     void SendInit();
     void SendLayers(int selected);
     void SendPreview(const std::wstring& path, int bgTolerance);
@@ -30,9 +34,13 @@ private:
 
     // --- overlays ---
     void RebuildOverlays();
+    void RestackOverlays();
     void SyncOverlay(int index);
+    void OnTimerChanged(int index, const Layer& timer, bool save);
     void SetAllHidden(bool hidden);
     void SetPositionMode(int index, bool on);
+    void CancelPositionMode();
+    void RemapPositionIndex(int index);
 
     // --- shell integration ---
     bool CreateTrayIcon();
@@ -40,9 +48,20 @@ private:
     void UpdateTrayIcon();
     void ShowTrayMenu();
     void RegisterHotkey();
+    void SetHotkey(bool cycle, unsigned mods, unsigned vk);
+    void ShowNextLayer();
+
+    // --- statistics and resets ---
+    void AccountUsage();
+    void SendStats();
+    void ResetSettings();
+    void ResetAll();
+    void UndoReset();
+    void Toast(const std::string& text, bool warn, const char* action = nullptr,
+               const char* actionLabel = nullptr);
 
     // --- updates ---
-    void StartUpdateCheck(bool manual);
+    void StartUpdateCheck(bool manual, bool install);
     void OnUpdateFinished(struct UpdateResult* result);
     void RestartIntoUpdate();
 
@@ -51,6 +70,7 @@ private:
 
     // --- dialogs, run on the UI thread in response to a page request ---
     void BrowseImage(int index);
+    void SetLayerImage(int index, const std::wstring& image);
     void PickTint(int index);
 
     static LRESULT CALLBACK HiddenProc(HWND, UINT, WPARAM, LPARAM);
@@ -65,13 +85,28 @@ private:
     std::vector<std::unique_ptr<OverlayWindow>> overlays_;
     int selected_ = -1;
     int positionIndex_ = -1;
+    Layer positionBackup_;          // the positioned layer before it was moved
+    bool positionWasHidden_ = false;
     bool allHidden_ = false;
     bool trayAdded_ = false;
+    bool hotkeyOk_ = true;          // false while another program owns the combination
+    bool cycleOk_ = true;           // the same, for the next-layer key
+    unsigned long long lastUsageTick_ = 0;  // GetTickCount64 at the last usage count
+    int usageTicks_ = 0;                    // counts since the last save
     bool quitting_ = false;
 
     bool updateBusy_ = false;
-    std::string updateReady_;    // version installed and waiting for a restart
-    bool justUpdated_ = false;   // started by the updater; say so once
+    std::string updateReady_;      // version installed and waiting for a restart
+    std::string updateAvailable_;  // newer version found but not installed
+    std::string updateNotes_;      // its release notes, plain text
+    std::string updateError_;      // why the last install failed, for the page
+    UpdateRecord updated_;         // this start is the result of an update
+    std::string updateFailedTo_;   // an installed update that did not take
+    struct {
+        long long atMs = 0;        // when the last check finished (Unix ms); 0 = none yet
+        bool ok = false;
+        std::string latest, published, error;
+    } lastCheck_;
 
     std::unique_ptr<ManagerWindow> manager_;
 };

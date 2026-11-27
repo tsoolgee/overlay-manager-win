@@ -1,5 +1,6 @@
 #include "manager.h"
 
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <wrl.h>
 #include <WebView2.h>
@@ -9,6 +10,7 @@
 
 #include "model.h"
 #include "resource.h"
+#include "runtime.h"
 #include "util.h"
 
 using Microsoft::WRL::Callback;
@@ -16,8 +18,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-const wchar_t* kManagerClass = L"OverlayMgrManagerWnd";
-const wchar_t* kTitle = L"Overlay Manager - ניהול חותמות צפות";
+const wchar_t* kManagerClass = L"FloatyManagerWnd";
+const wchar_t* kTitle = L"Floaty";
 
 // The page ships inside the executable as an RCDATA resource, so there is a
 // single file to distribute and nothing to go missing next to it.
@@ -42,6 +44,40 @@ std::wstring LoadUiHtml() {
 // deleting one folder.
 std::wstring UserDataFolder() { return ConfigDir() + L"\\WebView2"; }
 
+// The page's --bg for each theme: the frame is painted with it before the page
+// draws, so neither a resize nor the first frame flashes a different colour.
+COLORREF ThemeBackground(bool light) { return light ? RGB(0xee, 0xf2, 0xf7) : RGB(0x0b, 0x12, 0x20); }
+
+// The process is per-monitor DPI aware, so window sizes are physical pixels;
+// the page lays itself out in CSS pixels. Scaling by the DPI keeps the window
+// the size the layout was designed for on a 125% or 150% display, where an
+// unscaled 1080px window is only 864 or 720 CSS pixels wide. Both functions
+// arrived in Windows 10 1607; before that the system DPI is the answer.
+UINT DpiFor(HWND hwnd) {
+    using ForWindow = UINT(WINAPI*)(HWND);
+    using ForSystem = UINT(WINAPI*)();
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (hwnd) {
+        if (auto f = reinterpret_cast<ForWindow>(GetProcAddress(user32, "GetDpiForWindow")))
+            if (UINT d = f(hwnd)) return d;
+    }
+    if (auto f = reinterpret_cast<ForSystem>(GetProcAddress(user32, "GetDpiForSystem")))
+        if (UINT d = f()) return d;
+    HDC dc = GetDC(nullptr);
+    const int d = GetDeviceCaps(dc, LOGPIXELSX);
+    ReleaseDC(nullptr, dc);
+    return d > 0 ? (UINT)d : 96;
+}
+
+int Scaled(int cssPixels, UINT dpi) { return MulDiv(cssPixels, (int)dpi, 96); }
+
+// Without this the window would just stay an empty frame.
+void ReportStartFailure(HWND owner, HRESULT hr) {
+    wchar_t what[96];
+    swprintf(what, 96, L"רכיב התצוגה של מיקרוסופט לא הצליח לעלות (קוד 0x%08lX).", (unsigned long)hr);
+    ReportRuntimeError(owner, what);
+}
+
 }  // namespace
 
 struct ManagerWindow::Impl {
@@ -51,23 +87,13 @@ struct ManagerWindow::Impl {
     std::vector<std::string> queue;
 };
 
-bool WebView2Available() {
-    LPWSTR version = nullptr;
-    const HRESULT hr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
-    const bool ok = SUCCEEDED(hr) && version != nullptr;
-    if (version) CoTaskMemFree(version);
-    return ok;
-}
-
 void ManagerWindow::RegisterWindowClass(HINSTANCE inst) {
     WNDCLASSW wc{};
     wc.lpfnWndProc = &ManagerWindow::WndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
-    wc.hbrBackground = CreateSolidBrush(RGB(0x0f, 0x17, 0x2a));  // Slate, so the
-                                                                 // frame never
-                                                                 // flashes white
+    wc.hbrBackground = nullptr;  // WM_ERASEBKGND paints the current theme's colour
     wc.lpszClassName = kManagerClass;
     RegisterClassW(&wc);
 }
@@ -90,29 +116,27 @@ ManagerWindow::~ManagerWindow() {
 }
 
 bool ManagerWindow::Create(bool lightTheme) {
-    if (!WebView2Available()) {
-        const int answer = MessageBoxW(
-            nullptr,
-            L"הממשק של Overlay Manager מבוסס על רכיב WebView2 של מיקרוסופט, "
-            L"והוא לא מותקן במחשב הזה.\n\n"
-            L"רוב מחשבי Windows 11 וגרסאות עדכניות של Windows 10 כוללים אותו כברירת מחדל.\n\n"
-            L"לפתוח את דף ההורדה של מיקרוסופט?",
-            kTitle, MB_ICONWARNING | MB_YESNO);
-        if (answer == IDYES)
-            ShellExecuteW(nullptr, L"open",
-                          L"https://developer.microsoft.com/microsoft-edge/webview2/",
-                          nullptr, nullptr, SW_SHOWNORMAL);
+    const RuntimeChoice runtime = ChooseWebView2Runtime(nullptr);
+    if (runtime.source == RuntimeSource::Missing) {
+        ReportMissingRuntime(nullptr);
+        return false;
+    }
+    if (runtime.source == RuntimeSource::Failed) {
+        if (!runtime.error.empty())
+            ReportRuntimeError(nullptr, L"הכנת רכיב התצוגה נכשלה: " + runtime.error);
         return false;
     }
 
     // Size against the work area so the window fits on modest laptop screens
-    // instead of opening larger than the desktop.
+    // instead of opening larger than the desktop, and in CSS pixels (see
+    // DpiFor) so a scaled display gets the same layout as an unscaled one.
     RECT work{0, 0, 1280, 800};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     const int workW = work.right - work.left;
     const int workH = work.bottom - work.top;
-    const int w = std::min(1080, std::max(820, (int)(workW * 0.72)));
-    const int h = std::min(760, std::max(560, (int)(workH * 0.80)));
+    const UINT dpi = DpiFor(nullptr);
+    const int w = std::min(workW, std::min(Scaled(1240, dpi), std::max(Scaled(900, dpi), workW * 85 / 100)));
+    const int h = std::min(workH, std::min(Scaled(820, dpi), std::max(Scaled(600, dpi), workH * 85 / 100)));
 
     hwnd_ = CreateWindowExW(
         0, kManagerClass, kTitle, WS_OVERLAPPEDWINDOW,
@@ -122,24 +146,33 @@ bool ManagerWindow::Create(bool lightTheme) {
 
     SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
     SetWindowTextW(hwnd_, kTitle);
+    SetTheme(lightTheme);
 
     const std::wstring html = LoadUiHtml();
     const bool light = lightTheme;
 
-    CreateCoreWebView2EnvironmentWithOptions(
-        nullptr, UserDataFolder().c_str(), nullptr,
+    const HRESULT started = CreateCoreWebView2EnvironmentWithOptions(
+        runtime.folder.empty() ? nullptr : runtime.folder.c_str(), UserDataFolder().c_str(),
+        nullptr,
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [this, html, light](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
-                if (FAILED(hr) || !env) return hr;
+                if (FAILED(hr) || !env) {
+                    ReportStartFailure(hwnd_, hr);
+                    return hr;
+                }
                 env->CreateCoreWebView2Controller(
                     hwnd_,
                     Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                         [this, html, light](HRESULT hr2,
                                             ICoreWebView2Controller* ctrl) -> HRESULT {
-                            if (FAILED(hr2) || !ctrl) return hr2;
+                            if (FAILED(hr2) || !ctrl) {
+                                ReportStartFailure(hwnd_, hr2);
+                                return hr2;
+                            }
                             impl_->controller = ctrl;
                             ctrl->get_CoreWebView2(&impl_->webview);
                             if (!impl_->webview) return E_FAIL;
+                            ApplyWebViewBackground();
 
                             // This is an application UI, not a browser: turn off
                             // the context menu, dev tools and the zoom gesture so
@@ -199,6 +232,7 @@ bool ManagerWindow::Create(bool lightTheme) {
                         }).Get());
                 return S_OK;
             }).Get());
+    if (FAILED(started)) ReportStartFailure(hwnd_, started);
 
     return true;
 }
@@ -256,6 +290,29 @@ bool ManagerWindow::IsVisible() const {
     return hwnd_ && IsWindowVisible(hwnd_);
 }
 
+void ManagerWindow::SetTheme(bool light) {
+    light_ = light;
+    if (!hwnd_) return;
+    // A dark title bar over the dark page, instead of a white strip above it.
+    // Attribute 20 is DWMWA_USE_IMMERSIVE_DARK_MODE from Windows 10 20H1 on;
+    // 19 is the same switch in 1809-1909. Older systems ignore both.
+    const BOOL dark = light ? FALSE : TRUE;
+    if (FAILED(DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark))))
+        DwmSetWindowAttribute(hwnd_, 19, &dark, sizeof(dark));
+    ApplyWebViewBackground();
+    InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void ManagerWindow::ApplyWebViewBackground() {
+    if (!impl_ || !impl_->controller) return;
+    // What the WebView shows before the page paints, and while it resizes.
+    ComPtr<ICoreWebView2Controller2> c2;
+    if (SUCCEEDED(impl_->controller.As(&c2)) && c2) {
+        const COLORREF bg = ThemeBackground(light_);
+        c2->put_DefaultBackgroundColor(COREWEBVIEW2_COLOR{255, GetRValue(bg), GetGValue(bg), GetBValue(bg)});
+    }
+}
+
 LRESULT CALLBACK ManagerWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* self = reinterpret_cast<ManagerWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (self) return self->Handle(msg, wp, lp);
@@ -269,11 +326,22 @@ LRESULT ManagerWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_GETMINMAXINFO: {
-            // Below this the two-pane layout starts overlapping itself.
+            // Below this the two-pane layout starts overlapping itself. In CSS
+            // pixels, like the default size, so it holds on a scaled display.
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-            mmi->ptMinTrackSize.x = 760;
-            mmi->ptMinTrackSize.y = 520;
+            const UINT dpi = DpiFor(hwnd_);
+            mmi->ptMinTrackSize.x = Scaled(780, dpi);
+            mmi->ptMinTrackSize.y = Scaled(540, dpi);
             return 0;
+        }
+
+        case WM_ERASEBKGND: {
+            RECT rc;
+            GetClientRect(hwnd_, &rc);
+            HBRUSH brush = CreateSolidBrush(ThemeBackground(light_));
+            FillRect(reinterpret_cast<HDC>(wp), &rc, brush);
+            DeleteObject(brush);
+            return 1;
         }
 
         case WM_CLOSE:

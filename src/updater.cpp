@@ -6,19 +6,35 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstring>
+#include <iterator>
 #include <thread>
 #include <vector>
 
 #include "json.h"
+#include "model.h"
 #include "util.h"
 #include "version.h"
 
 namespace {
 
-const wchar_t* kLatestUrl =
-    L"https://api.github.com/repos/tsoolgee/overlay-manager-win/releases/latest";
-const char* kExeAsset = "OverlayManager.exe";
-const char* kHashAsset = "OverlayManager.exe.sha256";
+// The repository whose releases this build updates from.
+const char* kRepo = "tsoolgee/overlay-manager-win";
+const char* kExeAsset = "Floaty.exe";
+const char* kHashAsset = "Floaty.exe.sha256";
+
+// Set only by tests: a stand-in for GitHub's "latest release" endpoint.
+std::wstring TestApiUrl() {
+    wchar_t buf[1024] = {0};
+    const DWORD n = GetEnvironmentVariableW(L"FLOATY_UPDATE_API", buf, (DWORD)std::size(buf));
+    return (n > 0 && n < std::size(buf)) ? std::wstring(buf, n) : std::wstring();
+}
+
+std::string LatestApiUrl() {
+    const std::wstring test = TestApiUrl();
+    if (!test.empty()) return ToUtf8(test);
+    return std::string("https://api.github.com/repos/") + kRepo + "/releases/latest";
+}
 
 // A release asset is ~420 KB; anything far past that is not ours.
 const size_t kMaxDownload = 64u * 1024 * 1024;
@@ -34,7 +50,7 @@ struct Handle {
 };
 
 HINTERNET OpenSession() {
-    const std::wstring agent = L"OverlayManager/" + ToWide(AppVersion());
+    const std::wstring agent = L"Floaty/" + ToWide(AppVersion());
     // Automatic proxy (Windows 8.1+) follows the system's proxy settings;
     // older systems reject the flag, so fall back to the registry default.
     HINTERNET s = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -61,14 +77,18 @@ int HttpGet(const std::string& url, std::string& body, const wchar_t* accept) {
     uc.lpszUrlPath = path.data();
     uc.dwUrlPathLength = (DWORD)path.size();
     if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc)) return 0;
-    if (uc.nScheme != INTERNET_SCHEME_HTTPS) return 0;  // never fetch code over plain HTTP
+    // Never fetch code over plain HTTP — except from this machine itself while
+    // a test has pointed the updater at a local stand-in for GitHub.
+    const bool https = uc.nScheme == INTERNET_SCHEME_HTTPS;
+    const bool local = _wcsicmp(host, L"127.0.0.1") == 0 || _wcsicmp(host, L"localhost") == 0;
+    if (!https && !(local && !TestApiUrl().empty())) return 0;
 
     Handle session(OpenSession());
     if (!session) return 0;
     Handle conn(WinHttpConnect(session.h, host, uc.nPort, 0));
     if (!conn) return 0;
     Handle req(WinHttpOpenRequest(conn.h, L"GET", path.data(), nullptr, WINHTTP_NO_REFERER,
-                                  WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE));
+                                  WINHTTP_DEFAULT_ACCEPT_TYPES, https ? WINHTTP_FLAG_SECURE : 0));
     if (!req) return 0;
 
     std::wstring headers;
@@ -160,6 +180,44 @@ bool IsNewer(const std::string& latest, const std::string& current) {
     return a.size() > b.size();
 }
 
+// Release notes are Markdown; the page shows them as plain lines. Emphasis and
+// heading marks go, list items become bullets, and the hash line — meant for
+// people verifying a download by hand — is left out.
+std::string PlainNotes(const std::string& md) {
+    std::string out, line;
+    auto flush = [&] {
+        std::string s = line;
+        line.clear();
+        for (const char* mark : {"**", "__", "`"}) {
+            for (size_t p; (p = s.find(mark)) != std::string::npos;) s.erase(p, strlen(mark));
+        }
+        size_t a = s.find_first_not_of(" \t\r");
+        if (a == std::string::npos) { if (!out.empty() && out.back() != '\n') out += '\n'; return; }
+        s = s.substr(a);
+        while (!s.empty() && s[0] == '#') s.erase(0, 1);
+        if (s.size() > 1 && (s[0] == '-' || s[0] == '*') && s[1] == ' ') s = "\xE2\x80\xA2 " + s.substr(2);
+        if (!FindSha256(s).empty()) return;
+        a = s.find_first_not_of(' ');
+        if (a == std::string::npos) return;
+        out += s.substr(a);
+        out += '\n';
+    };
+    for (char c : md) {
+        if (c == '\n') flush(); else line += c;
+    }
+    flush();
+    while (!out.empty() && (out.back() == '\n' || out.back() == ' ')) out.pop_back();
+    if (out.size() > 2000) {
+        // Cut on a character boundary: UTF-8 continuation bytes are 10xxxxxx.
+        size_t cut = 2000;
+        while (cut > 0 && ((unsigned char)out[cut] & 0xC0) == 0x80) --cut;
+        out = out.substr(0, cut) + "\xE2\x80\xA6";
+    }
+    return out;
+}
+
+std::wstring RecordPath() { return ConfigDir() + L"\\update.json"; }
+
 bool WriteAll(const std::wstring& path, const std::string& data) {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -174,15 +232,26 @@ bool WriteAll(const std::wstring& path, const std::string& data) {
 
 }  // namespace
 
-const char* AppVersion() { return OVERLAY_MANAGER_VERSION; }
+const char* AppVersion() { return FLOATY_VERSION; }
+
+std::string ReleasesPageUrl() { return std::string("https://github.com/") + kRepo + "/releases/latest"; }
 
 UpdateInfo CheckForUpdate() {
     UpdateInfo info;
     std::string body;
-    const int status = HttpGet(ToUtf8(kLatestUrl), body, L"application/vnd.github+json");
+    const int status = HttpGet(LatestApiUrl(), body, L"application/vnd.github+json");
     if (status != 200) {
-        info.error = status == 0 ? "אין חיבור לשרת העדכונים"
-                                 : "שרת העדכונים החזיר שגיאה " + std::to_string(status);
+        // GitHub allows 60 unauthenticated checks an hour per address; on a
+        // shared network (an office, a school) that runs out, and it answers
+        // 403 or 429. Say what it is rather than quote the number.
+        if (status == 0)
+            info.error = "אין חיבור לאינטרנט, או שהגישה לגיטהאב חסומה ברשת הזו";
+        else if (status == 403 || status == 429)
+            info.error = "גיטהאב הגביל זמנית את מספר הבדיקות מהרשת הזו. אפשר לנסות שוב בעוד שעה";
+        else if (status == 404)
+            info.error = "עדיין לא פורסמה גרסה להורדה";
+        else
+            info.error = "שרת העדכונים החזיר שגיאה " + std::to_string(status);
         return info;
     }
 
@@ -210,6 +279,8 @@ UpdateInfo CheckForUpdate() {
         if (HttpGet(hashUrl, h, nullptr) == 200) info.sha256 = FindSha256(h);
     }
     if (info.sha256.empty()) info.sha256 = FindSha256(rel["body"].asString());
+    info.notes = PlainNotes(rel["body"].asString());
+    info.publishedAt = rel["published_at"].asString().substr(0, 10);  // "2026-11-26T05:22:41Z"
 
     if (info.newer && info.downloadUrl.empty()) {
         info.newer = false;
@@ -235,7 +306,8 @@ std::string DownloadAndInstall(const UpdateInfo& info) {
     const std::wstring fresh = exe + L".new";
     const std::wstring old = exe + L".old";
 
-    if (!WriteAll(fresh, data)) return "אין הרשאת כתיבה לתיקייה של התוכנה";
+    if (!WriteAll(fresh, data))
+        return "אין הרשאה לעדכן את התוכנה בתיקייה שבה היא נמצאת. אפשר להוריד את הגרסה החדשה ידנית";
 
     // A leftover from an earlier update would block the rename below.
     DeleteFileW(old.c_str());
@@ -264,6 +336,37 @@ bool RelaunchUpdated(bool minimized) {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return true;
+}
+
+void WriteUpdateRecord(const UpdateInfo& info) {
+    js::Object o;
+    o["from"] = AppVersion();
+    o["to"] = info.version;
+    o["notes"] = info.notes;
+    o["exe"] = ToUtf8(ExePath());
+    WriteAll(RecordPath(), js::Value(std::move(o)).dump());
+}
+
+UpdateRecord TakeUpdateRecord() {
+    UpdateRecord r;
+    const std::wstring path = RecordPath();
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return r;
+    std::string text;
+    char buf[4096];
+    DWORD got = 0;
+    while (text.size() < 256 * 1024 && ReadFile(f, buf, sizeof(buf), &got, nullptr) && got)
+        text.append(buf, got);
+    CloseHandle(f);
+    DeleteFileW(path.c_str());  // read once, whatever it says
+    const js::Value v = js::Value::parse(text);
+    r.to = v["to"].asString();
+    r.from = v["from"].asString();
+    r.notes = v["notes"].asString();
+    r.exe = v["exe"].asString();
+    r.present = !r.to.empty();
+    return r;
 }
 
 void CleanupAfterUpdate() {

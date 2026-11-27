@@ -41,6 +41,19 @@ struct Layer {
     // same colour inside the logo survives.
     bool removeBg = false;
     int bgTolerance = 25;        // 1..100
+
+    // How long this layer has been on screen, for the statistics in the
+    // settings. Counted only while it is enabled, has a picture and
+    // "hide all" is off.
+    double usageSeconds = 0.0;
+
+    // The kiosk timer (image "widget:timer", see timer.h): what "reset" goes
+    // back to, the time left, the time used, and the switches in its menu.
+    int timerStart = 9808;
+    double timerRemaining = 9808;
+    double timerUsed = 0.0;
+    bool timerRunning = true;
+    bool timerLocked = false;
 };
 
 struct Settings {
@@ -52,10 +65,15 @@ struct Settings {
     // Global show/hide hotkey, stored as MOD_* flags plus a virtual key.
     unsigned hotkeyMods = 0;
     unsigned hotkeyVk = 0;
+    // Global "show the next layer, hide the others" hotkey; vk 0 = off.
+    unsigned cycleMods = 0;
+    unsigned cycleVk = 0;
+    std::string statsSince;      // "YYYY-MM-DD": when usage counting began
 };
 
-// Loads/saves %APPDATA%\OverlayManager\config.ini in the same layout the
-// original build wrote, so an existing configuration keeps working.
+// Loads/saves %APPDATA%\Floaty\config.ini in the same layout Overlay Manager
+// writes (and imports Overlay Manager's on the first run), so an existing
+// configuration keeps working.
 bool LoadConfig(Settings& settings, std::vector<Layer>& layers);
 bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers);
 

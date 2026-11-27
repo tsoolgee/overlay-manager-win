@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -67,8 +68,15 @@ std::wstring ConfigDir() {
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata)))
         return L".";
     std::wstring dir = appdata;
-    dir += L"\\OverlayManager";
-    CreateDirectoryW(dir.c_str(), nullptr);
+    dir += L"\\Floaty";
+    // CreateDirectory succeeds only the first time, i.e. on Floaty's first run.
+    // Floaty grew out of Overlay Manager and reads the same config.ini, so a
+    // user switching over keeps their layers: copy it across once. The
+    // original's folder is left as it is, for Overlay Manager itself.
+    if (CreateDirectoryW(dir.c_str(), nullptr)) {
+        const std::wstring legacy = std::wstring(appdata) + L"\\OverlayManager\\config.ini";
+        CopyFileW(legacy.c_str(), (dir + L"\\config.ini").c_str(), TRUE);
+    }
     return dir;
 }
 
@@ -86,6 +94,13 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
     settings.hotkeyMods     = (unsigned)GetInt(kGeneral, L"HotkeyMods",
                                                MOD_CONTROL | MOD_ALT, path);
     settings.hotkeyVk       = (unsigned)GetInt(kGeneral, L"HotkeyVk", 'H', path);
+    settings.cycleMods      = (unsigned)GetInt(kGeneral, L"CycleHotkeyMods", (int)settings.cycleMods, path);
+    settings.cycleVk        = (unsigned)GetInt(kGeneral, L"CycleHotkeyVk", (int)settings.cycleVk, path);
+    {
+        const std::wstring since = GetStr(kGeneral, L"StatsSince", L"", path);
+        settings.statsSince.clear();
+        for (wchar_t ch : since) settings.statsSince += static_cast<char>(ch);  // an ASCII date
+    }
 
     const int count = GetInt(kGeneral, L"Count", 0, path);
     layers.clear();
@@ -117,6 +132,12 @@ bool LoadConfig(Settings& settings, std::vector<Layer>& layers) {
         l.grayscale    = GetInt(s, L"Grayscale", 0, path) != 0;
         l.removeBg     = GetInt(s, L"RemoveBg", 0, path) != 0;
         l.bgTolerance  = GetInt(s, L"BgTolerance", 25, path);
+        l.usageSeconds = GetDouble(s, L"UsageSeconds", 0.0, path);
+        l.timerStart     = std::max(0, GetInt(s, L"TimerStart", l.timerStart, path));
+        l.timerRemaining = std::max(0.0, GetDouble(s, L"TimerRemaining", l.timerStart, path));
+        l.timerUsed      = std::max(0.0, GetDouble(s, L"TimerUsed", 0.0, path));
+        l.timerRunning   = GetInt(s, L"TimerRunning", 1, path) != 0;
+        l.timerLocked    = GetInt(s, L"TimerLocked", 0, path) != 0;
         layers.push_back(std::move(l));
     }
     return true;
@@ -136,6 +157,9 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
     PutInt(text, L"AutoUpdate", settings.autoUpdate ? 1 : 0);
     PutInt(text, L"HotkeyMods", settings.hotkeyMods);
     PutInt(text, L"HotkeyVk", settings.hotkeyVk);
+    PutInt(text, L"CycleHotkeyMods", settings.cycleMods);
+    PutInt(text, L"CycleHotkeyVk", settings.cycleVk);
+    PutStr(text, L"StatsSince", std::wstring(settings.statsSince.begin(), settings.statsSince.end()));
 
     for (size_t i = 0; i < layers.size(); ++i) {
         const Layer& l = layers[i];
@@ -163,6 +187,14 @@ bool SaveConfig(const Settings& settings, const std::vector<Layer>& layers) {
         PutInt(text, L"Grayscale", l.grayscale ? 1 : 0);
         PutInt(text, L"RemoveBg", l.removeBg ? 1 : 0);
         PutInt(text, L"BgTolerance", l.bgTolerance);
+        PutInt(text, L"UsageSeconds", (long long)l.usageSeconds);
+        if (l.image == L"widget:timer") {
+            PutInt(text, L"TimerStart", l.timerStart);
+            PutInt(text, L"TimerRemaining", (long long)l.timerRemaining);
+            PutInt(text, L"TimerUsed", (long long)l.timerUsed);
+            PutInt(text, L"TimerRunning", l.timerRunning ? 1 : 0);
+            PutInt(text, L"TimerLocked", l.timerLocked ? 1 : 0);
+        }
     }
 
     const std::wstring path = ConfigPath();
