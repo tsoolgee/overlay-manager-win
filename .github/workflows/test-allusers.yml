@@ -30,6 +30,7 @@ jobs:
           "user: $(whoami)   step session: $((Get-Process -Id $PID).SessionId)"
           qwinsta
           query user 2>&1
+          exit 0
 
       - name: Turn on, launch, relaunch, turn off
         shell: pwsh
